@@ -19,12 +19,13 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import styles from "./ScanbodyWorkspace.module.css";
 import { captureModelViews } from "@/lib/capture-views";
 import { orientGeometryWithPca } from "@/lib/pca";
+import { findTriangleIdsInsideOutline } from "@/lib/triangle-selection";
 import {
   CAPTURE_SIZE,
   type AnalysisResult,
   type CapturedView,
   type Detection,
-  type ImagePoint,
+  type TriangleIdMap,
 } from "@/lib/scanbody-types";
 
 type ViewerState = {
@@ -43,22 +44,6 @@ type ModelInfo = {
 const BASE_COLOR = new THREE.Color(0xcbd2d5);
 const HIGHLIGHT_COLOR = new THREE.Color(0xff5a36);
 
-function getOutlineBounds(outline: ImagePoint[]) {
-  let minX = CAPTURE_SIZE;
-  let minY = CAPTURE_SIZE;
-  let maxX = 0;
-  let maxY = 0;
-
-  for (const [x, y] of outline) {
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-
-  return { minX, minY, maxX, maxY };
-}
-
 function disposeObject(object: THREE.Object3D) {
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
@@ -75,15 +60,15 @@ export default function ScanbodyWorkspace() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<ViewerState | null>(null);
   const meshRef = useRef<THREE.Mesh | null>(null);
-  const markerGroupRef = useRef<THREE.Group | null>(null);
   const sphereRef = useRef(new THREE.Sphere());
-  const captureCamerasRef = useRef(new Map<string, THREE.OrthographicCamera>());
+  const triangleIdMapsRef = useRef(new Map<string, TriangleIdMap>());
 
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [capturedViews, setCapturedViews] = useState<CapturedView[]>([]);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
-  const [hitCenters, setHitCenters] = useState<THREE.Vector3[]>([]);
-  const [highlightScale, setHighlightScale] = useState(0.065);
+  const [selectedTriangleIds, setSelectedTriangleIds] = useState<Set<number>>(
+    () => new Set(),
+  );
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -145,71 +130,39 @@ export default function ScanbodyWorkspace() {
     };
   }, []);
 
-  const clearMarkers = useCallback(() => {
-    const viewer = viewerRef.current;
-    const markerGroup = markerGroupRef.current;
-    if (!viewer || !markerGroup) return;
-    viewer.scene.remove(markerGroup);
-    disposeObject(markerGroup);
-    markerGroupRef.current = null;
-  }, []);
-
-  const applyHighlights = useCallback(
-    (centers: THREE.Vector3[], radiusScale: number) => {
+  const applyTriangleHighlights = useCallback(
+    (triangleIds: ReadonlySet<number>) => {
       const mesh = meshRef.current;
-      const viewer = viewerRef.current;
-      if (!mesh || !viewer) return;
+      if (!mesh) return;
 
       const geometry = mesh.geometry;
       const positions = geometry.getAttribute("position") as THREE.BufferAttribute;
       const colors = geometry.getAttribute("color") as THREE.BufferAttribute;
-      const radius = Math.max(sphereRef.current.radius * radiusScale, 0.001);
-      const radiusSquared = radius * radius;
+      const triangleCount = Math.floor(positions.count / 3);
 
-      for (let index = 0; index < positions.count; index += 1) {
-        const x = positions.getX(index);
-        const y = positions.getY(index);
-        const z = positions.getZ(index);
-        let highlighted = false;
-
-        for (const center of centers) {
-          const dx = x - center.x;
-          const dy = y - center.y;
-          const dz = z - center.z;
-          if (dx * dx + dy * dy + dz * dz <= radiusSquared) {
-            highlighted = true;
-            break;
-          }
-        }
-
-        const color = highlighted ? HIGHLIGHT_COLOR : BASE_COLOR;
-        colors.setXYZ(index, color.r, color.g, color.b);
+      // STLLoader gives us a non-indexed mesh: every three consecutive vertices
+      // form one triangle. Color all three corners to highlight that exact face.
+      for (
+        let triangleIndex = 0;
+        triangleIndex < triangleCount;
+        triangleIndex += 1
+      ) {
+        const color = triangleIds.has(triangleIndex)
+          ? HIGHLIGHT_COLOR
+          : BASE_COLOR;
+        const firstVertex = triangleIndex * 3;
+        colors.setXYZ(firstVertex, color.r, color.g, color.b);
+        colors.setXYZ(firstVertex + 1, color.r, color.g, color.b);
+        colors.setXYZ(firstVertex + 2, color.r, color.g, color.b);
       }
       colors.needsUpdate = true;
-
-      clearMarkers();
-      if (centers.length === 0) return;
-
-      const markerGroup = new THREE.Group();
-      const markerSize = Math.max(radius * 0.14, 0.1);
-      for (const center of centers) {
-        const marker = new THREE.Mesh(
-          new THREE.SphereGeometry(markerSize, 16, 12),
-          new THREE.MeshBasicMaterial({ color: 0xffc145, depthTest: false }),
-        );
-        marker.position.copy(center);
-        marker.renderOrder = 10;
-        markerGroup.add(marker);
-      }
-      viewer.scene.add(markerGroup);
-      markerGroupRef.current = markerGroup;
     },
-    [clearMarkers],
+    [],
   );
 
   useEffect(() => {
-    applyHighlights(hitCenters, highlightScale);
-  }, [applyHighlights, highlightScale, hitCenters]);
+    applyTriangleHighlights(selectedTriangleIds);
+  }, [applyTriangleHighlights, selectedTriangleIds]);
 
   const resetViewer = useCallback(() => {
     const viewer = viewerRef.current;
@@ -237,11 +190,15 @@ export default function ScanbodyWorkspace() {
       setError(null);
       setAnalysis(null);
       setCapturedViews([]);
-      setHitCenters([]);
-      clearMarkers();
+      setSelectedTriangleIds(new Set());
+      triangleIdMapsRef.current.clear();
 
       try {
-        const geometry = new STLLoader().parse(await file.arrayBuffer());
+        const parsedGeometry = new STLLoader().parse(await file.arrayBuffer());
+        const geometry = parsedGeometry.index
+          ? parsedGeometry.toNonIndexed()
+          : parsedGeometry;
+        if (geometry !== parsedGeometry) parsedGeometry.dispose();
         orientGeometryWithPca(geometry);
 
         const positions = geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -286,7 +243,7 @@ export default function ScanbodyWorkspace() {
         setBusyLabel("Rendering 8 views");
         await new Promise((resolve) => requestAnimationFrame(resolve));
         const captures = captureModelViews(geometry);
-        captureCamerasRef.current = captures.cameras;
+        triangleIdMapsRef.current = captures.triangleIdMaps;
         setCapturedViews(captures.views);
       } catch (loadError) {
         const message = loadError instanceof Error ? loadError.message : "Could not read this STL.";
@@ -295,81 +252,30 @@ export default function ScanbodyWorkspace() {
         setBusyLabel(null);
       }
     },
-    [clearMarkers, resetViewer],
+    [resetViewer],
   );
 
-  const raycastOutline = useCallback(
-    (outline: Detection["outline"], camera: THREE.OrthographicCamera) => {
-      const mesh = meshRef.current;
-      if (!mesh || outline.length < 3) return null;
-      const { minX, minY, maxX, maxY } = getOutlineBounds(outline);
-      const centroid = outline.reduce(
-        (sum, [x, y]) => sum.add(new THREE.Vector2(x, y)),
-        new THREE.Vector2(),
-      ).multiplyScalar(1 / outline.length);
-      const samples = [
-        [centroid.x, centroid.y],
-        [(minX + maxX) / 2, (minY + maxY) / 2],
-        [minX * 0.4 + maxX * 0.6, minY * 0.4 + maxY * 0.6],
-        [minX * 0.6 + maxX * 0.4, minY * 0.4 + maxY * 0.6],
-      ];
-      const raycaster = new THREE.Raycaster();
+  const selectTrianglesFromAnalysis = useCallback((result: AnalysisResult) => {
+    const triangleIds = new Set<number>();
 
-      for (const [pixelX, pixelY] of samples) {
-        const ndc = new THREE.Vector2(
-          (pixelX / CAPTURE_SIZE) * 2 - 1,
-          1 - (pixelY / CAPTURE_SIZE) * 2,
+    // Each camera view has a same-sized hidden triangle-ID image. Filling the
+    // AI outline over that image gives us real STL face numbers, not a 3D box.
+    for (const viewResult of result.views) {
+      const triangleIdMap = triangleIdMapsRef.current.get(viewResult.view);
+      if (!triangleIdMap) continue;
+
+      for (const detection of viewResult.detections) {
+        if (detection.confidence < 0.35) continue;
+        const idsUnderOutline = findTriangleIdsInsideOutline(
+          detection.outline,
+          triangleIdMap,
         );
-        raycaster.setFromCamera(ndc, camera);
-        const hit = raycaster.intersectObject(mesh, false)[0];
-        if (hit) return hit.point.clone();
+        for (const triangleId of idsUnderOutline) triangleIds.add(triangleId);
       }
-      return null;
-    },
-    [],
-  );
+    }
 
-  const projectAnalysisToMesh = useCallback(
-    (result: AnalysisResult) => {
-      const candidates: { point: THREE.Vector3; confidence: number }[] = [];
-      for (const viewResult of result.views) {
-        const camera = captureCamerasRef.current.get(viewResult.view);
-        if (!camera) continue;
-        for (const detection of viewResult.detections) {
-          if (detection.confidence < 0.35) continue;
-          const point = raycastOutline(detection.outline, camera);
-          if (point) candidates.push({ point, confidence: detection.confidence });
-        }
-      }
-
-      candidates.sort((left, right) => right.confidence - left.confidence);
-      const mergeDistance = Math.max(sphereRef.current.radius * 0.075, 0.001);
-      const clusters: { center: THREE.Vector3; weight: number }[] = [];
-
-      for (const candidate of candidates) {
-        const existing = clusters.find(
-          (cluster) => cluster.center.distanceTo(candidate.point) < mergeDistance,
-        );
-        if (!existing) {
-          clusters.push({
-            center: candidate.point.clone(),
-            weight: candidate.confidence,
-          });
-          continue;
-        }
-
-        const totalWeight = existing.weight + candidate.confidence;
-        existing.center
-          .multiplyScalar(existing.weight)
-          .addScaledVector(candidate.point, candidate.confidence)
-          .multiplyScalar(1 / totalWeight);
-        existing.weight = totalWeight;
-      }
-
-      setHitCenters(clusters.map((cluster) => cluster.center));
-    },
-    [raycastOutline],
-  );
+    setSelectedTriangleIds(triangleIds);
+  }, []);
 
   const analyze = useCallback(async () => {
     if (capturedViews.length === 0) return;
@@ -392,14 +298,14 @@ export default function ScanbodyWorkspace() {
       if (!response.ok) throw new Error(payload.error || "Analysis failed.");
       const result = payload as AnalysisResult;
       setAnalysis(result);
-      projectAnalysisToMesh(result);
+      selectTrianglesFromAnalysis(result);
     } catch (analysisError) {
       const message = analysisError instanceof Error ? analysisError.message : "Analysis failed.";
       setError(message);
     } finally {
       setBusyLabel(null);
     }
-  }, [capturedViews, projectAnalysisToMesh]);
+  }, [capturedViews, selectTrianglesFromAnalysis]);
 
   const detectionsByView = useMemo(
     () => new Map(analysis?.views.map((view) => [view.view, view.detections]) ?? []),
@@ -485,7 +391,10 @@ export default function ScanbodyWorkspace() {
               <PipelineRow done={Boolean(modelInfo)} label="PCA alignment" />
               <PipelineRow done={capturedViews.length > 0} label="Camera views" />
               <PipelineRow done={Boolean(analysis)} label="Vision ROI" />
-              <PipelineRow done={hitCenters.length > 0} label="3D projection" />
+              <PipelineRow
+                done={selectedTriangleIds.size > 0}
+                label="Triangle mapping"
+              />
             </div>
           </section>
 
@@ -494,26 +403,15 @@ export default function ScanbodyWorkspace() {
               <Layers3 size={16} />
               <h2>Highlight</h2>
             </div>
-            <label className={styles.sliderLabel} htmlFor="roi-radius">
-              <span>ROI radius</span>
-              <span>{Math.round(highlightScale * 100)}%</span>
-            </label>
-            <input
-              id="roi-radius"
-              className={styles.slider}
-              type="range"
-              min="0.03"
-              max="0.12"
-              step="0.005"
-              value={highlightScale}
-              onChange={(event) => setHighlightScale(Number(event.target.value))}
-              disabled={!modelInfo}
-            />
+            <div className={styles.selectionSummary}>
+              <span>Selected triangles</span>
+              <strong>{selectedTriangleIds.size.toLocaleString()}</strong>
+            </div>
             <button
               className={styles.secondaryButton}
               type="button"
-              onClick={() => setHitCenters([])}
-              disabled={hitCenters.length === 0}
+              onClick={() => setSelectedTriangleIds(new Set())}
+              disabled={selectedTriangleIds.size === 0}
             >
               Clear highlight
             </button>
@@ -590,8 +488,8 @@ export default function ScanbodyWorkspace() {
                 <strong>{detectionCount}</strong>
               </div>
               <div>
-                <span>3D candidates</span>
-                <strong>{hitCenters.length}</strong>
+                <span>3D triangles</span>
+                <strong>{selectedTriangleIds.size.toLocaleString()}</strong>
               </div>
               <div>
                 <span>Model time</span>

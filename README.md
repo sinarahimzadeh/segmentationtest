@@ -36,6 +36,17 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Code map
+
+- `src/lib/capture-views.ts` renders the eight normal images and the hidden
+  per-pixel triangle-ID images.
+- `src/lib/triangle-selection.ts` fills an AI outline and reads the exact STL
+  triangle IDs beneath it.
+- `src/components/ScanbodyWorkspace.tsx` loads the STL, combines selected
+  triangle IDs, and colors those faces orange in the 3D viewer.
+- `src/app/api/analyze/route.ts` sends the camera images to the vision model and
+  validates its JSON outlines.
+
 ## What this proves
 
 - A normal web app can inspect STL geometry and create its own camera views.

@@ -29,3 +29,10 @@ export type CapturedView = {
   image: string;
 };
 
+export type TriangleIdMap = {
+  width: number;
+  height: number;
+  // Zero means background. A visible triangle is stored as triangle index + 1.
+  encodedTriangleIds: Uint32Array;
+};
+

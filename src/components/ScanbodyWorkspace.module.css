@@ -27,7 +27,6 @@
 .topbarStatus,
 .sectionHeading,
 .pipelineRow,
-.sliderLabel,
 .viewerLegend,
 .viewerLegend span,
 .errorMessage {
@@ -195,16 +194,23 @@
   border-radius: 50%;
 }
 
-.sliderLabel {
+.selectionSummary {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  margin-bottom: 7px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafa;
   font-size: 11px;
   color: var(--muted);
 }
 
-.slider {
-  width: 100%;
-  accent-color: var(--orange);
+.selectionSummary strong {
+  color: var(--orange);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
 }
 
 .errorMessage {

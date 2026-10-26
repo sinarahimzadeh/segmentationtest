@@ -128,7 +128,6 @@ export async function POST(request: Request) {
       model: modelName,
       apiKey: process.env.OPENAI_API_KEY,
       maxRetries: 1,
-      timeout: 55_000,
       useResponsesApi: true,
     });
     const detector = model.withStructuredOutput(detectionSchema, {

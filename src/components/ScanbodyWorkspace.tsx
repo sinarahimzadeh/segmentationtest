@@ -25,7 +25,7 @@ import {
   downloadBlob,
   type StlExportMode,
 } from "@/lib/stl-export";
-import { findTriangleIdsInsideOutline } from "@/lib/triangle-selection";
+import { findGroupedTrianglesWithMultiViewAgreement } from "@/lib/triangle-selection";
 import {
   CAPTURE_SIZE,
   type AnalysisResult,
@@ -49,10 +49,6 @@ type ModelInfo = {
 
 const BASE_COLOR = new THREE.Color(0xcbd2d5);
 const HIGHLIGHT_COLOR = new THREE.Color(0xff5a36);
-
-// These views show the occlusal surface and useful side detail without sending
-// five dark or edge-on images that can distract the vision model.
-const AI_VIEW_NAMES = ["top", "front-left", "front-right"];
 
 function disposeObject(object: THREE.Object3D) {
   object.traverse((child) => {
@@ -97,6 +93,12 @@ export default function ScanbodyWorkspace() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.shadowMap.enabled = true;
+    renderer.domElement.draggable = false;
+
+    // Keep browser-native dragging out of the 3D viewport. Without this,
+    // Chrome can show its no-entry cursor and steal a mesh-rotation gesture.
+    const preventNativeDrag = (event: DragEvent) => event.preventDefault();
+    renderer.domElement.addEventListener("dragstart", preventNativeDrag);
     container.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -135,6 +137,7 @@ export default function ScanbodyWorkspace() {
       cancelAnimationFrame(animationFrame);
       observer.disconnect();
       controls.dispose();
+      renderer.domElement.removeEventListener("dragstart", preventNativeDrag);
       renderer.dispose();
       renderer.domElement.remove();
       viewerRef.current = null;
@@ -283,25 +286,34 @@ export default function ScanbodyWorkspace() {
   );
 
   const selectTrianglesFromAnalysis = useCallback((result: AnalysisResult) => {
-    const triangleIds = new Set<number>();
-
-    // Each camera view has a same-sized hidden triangle-ID image. Filling the
-    // AI outline over that image gives us real STL face numbers, not a 3D box.
-    for (const viewResult of result.views) {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const positions = mesh.geometry.getAttribute(
+      "position",
+    ) as THREE.BufferAttribute;
+    const triangleCount = Math.floor(positions.count / 3);
+    const viewEvidence = result.views.flatMap((viewResult) => {
       const triangleIdMap = triangleIdMapsRef.current.get(viewResult.view);
-      if (!triangleIdMap) continue;
+      return triangleIdMap
+        ? [{ detections: viewResult, triangleIdMap }]
+        : [];
+    });
 
-      for (const detection of viewResult.detections) {
-        const idsUnderOutline = findTriangleIdsInsideOutline(
-          detection.outline,
-          triangleIdMap,
-        );
-        for (const triangleId of idsUnderOutline) triangleIds.add(triangleId);
-      }
-    }
-
+    // Views now vote on each visible triangle. This replaces the old raw union
+    // where a single inaccurate outline could permanently add mesh noise.
+    const { triangleIds } = findGroupedTrianglesWithMultiViewAgreement(
+      triangleCount,
+      positions,
+      viewEvidence,
+    );
     setSelectedTriangleIds(triangleIds);
   }, []);
+
+  // Re-run local grouping and cleanup whenever the stored AI result or the
+  // local selection algorithm changes. This does not contact OpenAI again.
+  useEffect(() => {
+    if (analysis) selectTrianglesFromAnalysis(analysis);
+  }, [analysis, selectTrianglesFromAnalysis]);
 
   const analyze = useCallback(async () => {
     if (capturedViews.length === 0) return;
@@ -310,16 +322,14 @@ export default function ScanbodyWorkspace() {
     setAnalysisNotice(null);
 
     try {
-      const analysisViews = AI_VIEW_NAMES.map((viewName) =>
-        capturedViews.find((view) => view.name === viewName),
-      ).filter((view): view is CapturedView => Boolean(view));
-
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageSize: CAPTURE_SIZE,
-          views: analysisViews.map((view) => ({
+          // Send every captured camera angle. A scanbody that is unclear in one
+          // render can be much easier to recognize from another side.
+          views: capturedViews.map((view) => ({
             name: view.name,
             image: view.image,
           })),
@@ -329,7 +339,6 @@ export default function ScanbodyWorkspace() {
       if (!response.ok) throw new Error(payload.error || "Analysis failed.");
       const result = payload as AnalysisResult;
       setAnalysis(result);
-      selectTrianglesFromAnalysis(result);
       const returnedDetectionCount = result.views.reduce(
         (total, view) => total + view.detections.length,
         0,
@@ -345,7 +354,7 @@ export default function ScanbodyWorkspace() {
     } finally {
       setBusyLabel(null);
     }
-  }, [capturedViews, selectTrianglesFromAnalysis]);
+  }, [capturedViews]);
 
   const exportStl = useCallback(
     async (mode: StlExportMode) => {

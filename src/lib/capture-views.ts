@@ -110,12 +110,15 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
   renderer.setSize(CAPTURE_SIZE, CAPTURE_SIZE, false);
   renderer.setClearColor(0xf3f5f6, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
   const material = new THREE.MeshStandardMaterial({
-    color: 0xcbd2d5,
-    roughness: 0.7,
-    metalness: 0.02,
+    // A neutral matte surface preserves shape without metallic glare.
+    color: 0xb9c1c4,
+    roughness: 0.86,
+    metalness: 0,
     side: THREE.DoubleSide,
   });
   const visualMesh = new THREE.Mesh(geometry, material);
@@ -150,13 +153,21 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
   );
   triangleIdTarget.texture.colorSpace = THREE.NoColorSpace;
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x667078, 2.1));
-  const keyLight = new THREE.DirectionalLight(0xffffff, 2.8);
-  keyLight.position.set(1, 2, 3);
+  // Soft studio lights are repositioned for every camera. That keeps front,
+  // back, side, and underside renders equally readable instead of allowing
+  // fixed world-space lights to make some views almost black.
+  scene.add(new THREE.AmbientLight(0xffffff, 1.15));
+  const lightTarget = new THREE.Object3D();
+  scene.add(lightTarget);
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.25);
+  keyLight.target = lightTarget;
   scene.add(keyLight);
-  const fillLight = new THREE.DirectionalLight(0xb8d7e8, 1.5);
-  fillLight.position.set(-3, 1, -2);
+  const fillLight = new THREE.DirectionalLight(0xd8edf5, 1.15);
+  fillLight.target = lightTarget;
   scene.add(fillLight);
+  const rimLight = new THREE.DirectionalLight(0xffffff, 0.7);
+  rimLight.target = lightTarget;
+  scene.add(rimLight);
 
   geometry.computeBoundingSphere();
   const sphere = geometry.boundingSphere ?? new THREE.Sphere();
@@ -183,6 +194,32 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
     camera.lookAt(sphere.center);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld(true);
+
+    const cameraRight = new THREE.Vector3().setFromMatrixColumn(
+      camera.matrixWorld,
+      0,
+    );
+    const cameraUp = new THREE.Vector3().setFromMatrixColumn(
+      camera.matrixWorld,
+      1,
+    );
+    const lightDistance = Math.max(sphere.radius * 3, 10);
+    lightTarget.position.copy(sphere.center);
+    keyLight.position
+      .copy(sphere.center)
+      .addScaledVector(direction, lightDistance)
+      .addScaledVector(cameraRight, lightDistance * 0.45)
+      .addScaledVector(cameraUp, lightDistance * 0.55);
+    fillLight.position
+      .copy(sphere.center)
+      .addScaledVector(direction, lightDistance)
+      .addScaledVector(cameraRight, -lightDistance * 0.65)
+      .addScaledVector(cameraUp, lightDistance * 0.15);
+    rimLight.position
+      .copy(sphere.center)
+      .addScaledVector(direction, -lightDistance)
+      .addScaledVector(cameraUp, lightDistance * 0.5);
+    lightTarget.updateMatrixWorld(true);
 
     renderer.setRenderTarget(null);
     renderer.setClearColor(0xf3f5f6, 1);

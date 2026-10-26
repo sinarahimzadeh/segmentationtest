@@ -4,6 +4,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Crosshair,
+  Download,
   Eye,
   FileUp,
   Layers3,
@@ -19,6 +20,11 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import styles from "./ScanbodyWorkspace.module.css";
 import { captureModelViews } from "@/lib/capture-views";
 import { orientGeometryWithPca } from "@/lib/pca";
+import {
+  createBinaryStlBlob,
+  downloadBlob,
+  type StlExportMode,
+} from "@/lib/stl-export";
 import { findTriangleIdsInsideOutline } from "@/lib/triangle-selection";
 import {
   CAPTURE_SIZE,
@@ -44,6 +50,10 @@ type ModelInfo = {
 const BASE_COLOR = new THREE.Color(0xcbd2d5);
 const HIGHLIGHT_COLOR = new THREE.Color(0xff5a36);
 
+// These views show the occlusal surface and useful side detail without sending
+// five dark or edge-on images that can distract the vision model.
+const AI_VIEW_NAMES = ["top", "front-left", "front-right"];
+
 function disposeObject(object: THREE.Object3D) {
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
@@ -57,11 +67,11 @@ function disposeObject(object: THREE.Object3D) {
 
 export default function ScanbodyWorkspace() {
   const viewportRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<ViewerState | null>(null);
   const meshRef = useRef<THREE.Mesh | null>(null);
   const sphereRef = useRef(new THREE.Sphere());
   const triangleIdMapsRef = useRef(new Map<string, TriangleIdMap>());
+  const originalPositionsRef = useRef<Float32Array | null>(null);
 
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [capturedViews, setCapturedViews] = useState<CapturedView[]>([]);
@@ -69,6 +79,7 @@ export default function ScanbodyWorkspace() {
   const [selectedTriangleIds, setSelectedTriangleIds] = useState<Set<number>>(
     () => new Set(),
   );
+  const [analysisNotice, setAnalysisNotice] = useState<string | null>(null);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -188,10 +199,12 @@ export default function ScanbodyWorkspace() {
       if (!viewer) return;
       setBusyLabel("Preparing mesh");
       setError(null);
+      setAnalysisNotice(null);
       setAnalysis(null);
       setCapturedViews([]);
       setSelectedTriangleIds(new Set());
       triangleIdMapsRef.current.clear();
+      originalPositionsRef.current = null;
 
       try {
         const parsedGeometry = new STLLoader().parse(await file.arrayBuffer());
@@ -199,6 +212,20 @@ export default function ScanbodyWorkspace() {
           ? parsedGeometry.toNonIndexed()
           : parsedGeometry;
         if (geometry !== parsedGeometry) parsedGeometry.dispose();
+
+        // Keep original scanner coordinates for STL export. The viewer geometry
+        // is rotated by PCA below, but triangle order remains exactly the same.
+        const originalPositions = geometry.getAttribute(
+          "position",
+        ) as THREE.BufferAttribute;
+        const originalValues = new Float32Array(originalPositions.count * 3);
+        for (let index = 0; index < originalPositions.count; index += 1) {
+          originalValues[index * 3] = originalPositions.getX(index);
+          originalValues[index * 3 + 1] = originalPositions.getY(index);
+          originalValues[index * 3 + 2] = originalPositions.getZ(index);
+        }
+        originalPositionsRef.current = originalValues;
+
         orientGeometryWithPca(geometry);
 
         const positions = geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -265,7 +292,6 @@ export default function ScanbodyWorkspace() {
       if (!triangleIdMap) continue;
 
       for (const detection of viewResult.detections) {
-        if (detection.confidence < 0.35) continue;
         const idsUnderOutline = findTriangleIdsInsideOutline(
           detection.outline,
           triangleIdMap,
@@ -281,14 +307,19 @@ export default function ScanbodyWorkspace() {
     if (capturedViews.length === 0) return;
     setBusyLabel("Finding scanbodies");
     setError(null);
+    setAnalysisNotice(null);
 
     try {
+      const analysisViews = AI_VIEW_NAMES.map((viewName) =>
+        capturedViews.find((view) => view.name === viewName),
+      ).filter((view): view is CapturedView => Boolean(view));
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageSize: CAPTURE_SIZE,
-          views: capturedViews.map((view) => ({
+          views: analysisViews.map((view) => ({
             name: view.name,
             image: view.image,
           })),
@@ -299,6 +330,15 @@ export default function ScanbodyWorkspace() {
       const result = payload as AnalysisResult;
       setAnalysis(result);
       selectTrianglesFromAnalysis(result);
+      const returnedDetectionCount = result.views.reduce(
+        (total, view) => total + view.detections.length,
+        0,
+      );
+      if (returnedDetectionCount === 0) {
+        setAnalysisNotice(
+          "OpenAI finished successfully but returned zero scanbodies. No triangles were selected.",
+        );
+      }
     } catch (analysisError) {
       const message = analysisError instanceof Error ? analysisError.message : "Analysis failed.";
       setError(message);
@@ -306,6 +346,40 @@ export default function ScanbodyWorkspace() {
       setBusyLabel(null);
     }
   }, [capturedViews, selectTrianglesFromAnalysis]);
+
+  const exportStl = useCallback(
+    async (mode: StlExportMode) => {
+      const originalPositions = originalPositionsRef.current;
+      if (!modelInfo || !originalPositions || selectedTriangleIds.size === 0) {
+        return;
+      }
+
+      setBusyLabel("Preparing STL download");
+      setError(null);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      try {
+        const blob = createBinaryStlBlob(
+          originalPositions,
+          selectedTriangleIds,
+          mode,
+        );
+        const baseName = modelInfo.name.replace(/\.stl$/i, "");
+        const suffix =
+          mode === "selected" ? "scanbodies" : "without-scanbodies";
+        downloadBlob(blob, `${baseName}-${suffix}.stl`);
+      } catch (exportError) {
+        const message =
+          exportError instanceof Error
+            ? exportError.message
+            : "Could not export this STL.";
+        setError(message);
+      } finally {
+        setBusyLabel(null);
+      }
+    },
+    [modelInfo, selectedTriangleIds],
+  );
 
   const detectionsByView = useMemo(
     () => new Map(analysis?.views.map((view) => [view.view, view.detections]) ?? []),
@@ -316,6 +390,11 @@ export default function ScanbodyWorkspace() {
     (total, view) => total + view.detections.length,
     0,
   );
+  const totalApiTokens =
+    analysis &&
+    (analysis.meta.inputTokens !== null || analysis.meta.outputTokens !== null)
+      ? (analysis.meta.inputTokens ?? 0) + (analysis.meta.outputTokens ?? 0)
+      : null;
 
   return (
     <main className={styles.appShell}>
@@ -337,25 +416,25 @@ export default function ScanbodyWorkspace() {
               <FileUp size={16} />
               <h2>Model</h2>
             </div>
-            <input
-              ref={fileInputRef}
-              className={styles.hiddenInput}
-              type="file"
-              accept=".stl,model/stl"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void loadFile(file);
-              }}
-            />
-            <button
-              className={styles.uploadButton}
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={Boolean(busyLabel)}
+            <label
+              className={`${styles.uploadButton} ${
+                busyLabel ? styles.uploadDisabled : ""
+              }`}
             >
               <Upload size={17} />
               Choose STL
-            </button>
+              <input
+                className={styles.fileInput}
+                type="file"
+                accept=".stl,model/stl"
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  if (file) void loadFile(file);
+                }}
+              />
+            </label>
 
             {modelInfo ? (
               <div className={styles.modelDetails}>
@@ -416,6 +495,40 @@ export default function ScanbodyWorkspace() {
               Clear highlight
             </button>
           </section>
+
+          <section className={styles.panelSection}>
+            <div className={styles.sectionHeading}>
+              <Download size={16} />
+              <h2>Export</h2>
+            </div>
+            <div className={styles.exportActions}>
+              <button
+                className={styles.exportButton}
+                type="button"
+                onClick={() => void exportStl("selected")}
+                disabled={selectedTriangleIds.size === 0 || Boolean(busyLabel)}
+              >
+                <Download size={16} />
+                Scanbodies STL
+              </button>
+              <button
+                className={styles.exportButton}
+                type="button"
+                onClick={() => void exportStl("remaining")}
+                disabled={selectedTriangleIds.size === 0 || Boolean(busyLabel)}
+              >
+                <Download size={16} />
+                Remaining jaw STL
+              </button>
+            </div>
+          </section>
+
+          {analysisNotice ? (
+            <div className={styles.noticeMessage} role="status">
+              <AlertCircle size={16} />
+              <span>{analysisNotice}</span>
+            </div>
+          ) : null}
 
           {error ? (
             <div className={styles.errorMessage} role="alert">
@@ -490,6 +603,14 @@ export default function ScanbodyWorkspace() {
               <div>
                 <span>3D triangles</span>
                 <strong>{selectedTriangleIds.size.toLocaleString()}</strong>
+              </div>
+              <div>
+                <span>API tokens</span>
+                <strong>
+                  {totalApiTokens === null
+                    ? "-"
+                    : totalApiTokens.toLocaleString()}
+                </strong>
               </div>
               <div>
                 <span>Model time</span>

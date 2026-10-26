@@ -20,12 +20,12 @@ Create `.env.local` in this folder:
 ```env
 OPENAI_API_KEY=your_api_key_here
 OPENAI_VISION_MODEL=gpt-6.1-sol
-SCANBODY_OUTLINE_POINTS=500
+SCANBODY_OUTLINE_POINTS=40
 ```
 
 `SCANBODY_OUTLINE_POINTS` controls how many ordered edge points the model must
 return for each detected scanbody. It accepts whole numbers from `3` to
-`10000`; `500` is the default.
+`10000`; `40` is the default used for the first detection pass.
 
 Then run:
 
@@ -42,6 +42,8 @@ Open [http://localhost:3000](http://localhost:3000).
   per-pixel triangle-ID images.
 - `src/lib/triangle-selection.ts` fills an AI outline and reads the exact STL
   triangle IDs beneath it.
+- `src/lib/stl-export.ts` writes selected or remaining triangles as binary STL
+  while preserving the uploaded file's original coordinate system.
 - `src/components/ScanbodyWorkspace.tsx` loads the STL, combines selected
   triangle IDs, and colors those faces orange in the 3D viewer.
 - `src/app/api/analyze/route.ts` sends the camera images to the vision model and

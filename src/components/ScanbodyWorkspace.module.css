@@ -29,7 +29,8 @@
 .pipelineRow,
 .viewerLegend,
 .viewerLegend span,
-.errorMessage {
+.errorMessage,
+.noticeMessage {
   display: flex;
   align-items: center;
 }
@@ -96,13 +97,10 @@
   font-weight: 720;
 }
 
-.hiddenInput {
-  display: none;
-}
-
 .uploadButton,
 .analyzeButton,
-.secondaryButton {
+.secondaryButton,
+.exportButton {
   width: 100%;
   min-height: 38px;
   display: inline-flex;
@@ -119,13 +117,16 @@
 }
 
 .uploadButton {
+  position: relative;
+  overflow: hidden;
   border-color: #aebabc;
   background: #fff;
   color: #273438;
 }
 
-.uploadButton:hover:not(:disabled),
-.secondaryButton:hover:not(:disabled) {
+.uploadButton:not(.uploadDisabled):hover,
+.secondaryButton:hover:not(:disabled),
+.exportButton:hover:not(:disabled) {
   background: #f4f7f7;
   border-color: #829194;
 }
@@ -146,12 +147,37 @@
   color: #455256;
 }
 
-.uploadButton:disabled,
+.exportActions {
+  display: grid;
+  gap: 8px;
+}
+
+.exportButton {
+  border-color: var(--line);
+  background: #fff;
+  color: #455256;
+}
+
+.uploadDisabled,
 .analyzeButton:disabled,
 .secondaryButton:disabled,
+.exportButton:disabled,
 .resetButton:disabled {
   cursor: not-allowed;
   opacity: 0.42;
+}
+
+.fileInput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.fileInput:disabled {
+  cursor: not-allowed;
 }
 
 .modelDetails {
@@ -225,7 +251,20 @@
   line-height: 1.45;
 }
 
-.errorMessage svg {
+.noticeMessage {
+  gap: 8px;
+  margin: 16px;
+  padding: 11px;
+  border: 1px solid #b9d4da;
+  border-radius: 6px;
+  background: #f1f8fa;
+  color: #315e68;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.errorMessage svg,
+.noticeMessage svg {
   flex: 0 0 auto;
 }
 
@@ -447,7 +486,7 @@
 
 .analysisFooter {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   border-top: 1px solid var(--line);
   background: #f8fafa;
 }

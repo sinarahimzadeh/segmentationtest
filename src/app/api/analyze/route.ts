@@ -16,7 +16,7 @@ const requestSchema = z.object({
     .max(10),
 });
 
-const DEFAULT_OUTLINE_POINTS_PER_SCANBODY = 500;
+const DEFAULT_OUTLINE_POINTS_PER_SCANBODY = 40;
 const MAX_OUTLINE_POINTS_PER_SCANBODY = 10_000;
 
 function getOutlinePointCount() {
@@ -49,10 +49,15 @@ function createDetectionSchema(pointCount: number) {
           z.object({
             label: z.literal("scanbody"),
             outline: z
-              .array(z.tuple([z.number(), z.number()]))
+              .array(
+                z.object({
+                  x: z.number().describe("Horizontal pixel coordinate."),
+                  y: z.number().describe("Vertical pixel coordinate."),
+                }),
+              )
               .length(pointCount)
               .describe(
-                `Exactly ${pointCount} ordered [x, y] pixel coordinates tracing the visible scanbody boundary.`,
+                `Exactly ${pointCount} ordered {x, y} pixel coordinates tracing the visible scanbody boundary.`,
               ),
             confidence: z
               .number()
@@ -70,15 +75,37 @@ Your only task is to locate implant scanbodies as regions of interest.
 
 A scanbody is a manufactured post attached to a dental implant. In a scan it
 usually protrudes from gingiva and has smooth cylindrical, flat-sided,
-rectangular, indexed, or cap-like manufactured geometry. Do not mark teeth,
-gingiva, crowns, holes, healing abutments, or random mesh artifacts.
+rectangular, indexed, or cap-like manufactured geometry. It can also look like
+a large circular collar or ring with a central opening, flat index, shoulder,
+or stepped sides. Several repeated manufactured posts distributed around the
+dental arch are strong evidence that they are scanbodies. Their shading may be
+very dark or very bright depending on the camera angle.
+
+Do not mark teeth, gingiva, crowns, empty implant holes, or random mesh
+artifacts. Do not reject a manufactured registration post merely because it
+resembles a healing abutment. A low-profile simple healing cap without scan
+indexing should be rejected, but a repeated protruding indexed body used for
+implant scanning should be marked.
+
+IMPORTANT: A scanbody can have a central screw channel or hole. Outline the
+outer silhouette of the manufactured body and ignore its internal opening. An
+empty implant hole means a hole with no manufactured post around it. In an
+occlusal or top view, large repeated circular or polygonal posts with central
+openings distributed around the arch are the primary targets. Examine the full
+image for this repeated manufactured pattern before deciding that a view is
+empty.
 
 The images are different camera views of the same mesh. Some images can show
 the underside, where no scanbody is visible. Treat every view independently.
 For every visible scanbody, trace its visible outer boundary with exactly
 ${pointCount} ordered points. Follow the real shape closely, including flat
 sides and corners. Do not repeat the first point at the end. Use the exact
-VIEW_ID supplied before each image. Never invent a detection when none is visible.`;
+VIEW_ID supplied before each image. Return every visible scanbody separately,
+including partially visible ones. When a likely scanbody is visible but you are
+not fully certain, include it with lower confidence instead of returning an
+empty view. An empty top or occlusal view is valid only after checking that no
+repeated protruding manufactured posts are present. Never invent a detection
+when no manufactured post is visible.`;
 }
 
 export async function POST(request: Request) {
@@ -113,7 +140,7 @@ export async function POST(request: Request) {
     const content: HumanMessage["content"] = [
       {
         type: "text",
-        text: `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as exactly ${outlinePointCount} ordered [x, y] pixel coordinates.`,
+        text: `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as exactly ${outlinePointCount} ordered objects with numeric x and y pixel coordinates.`,
       },
     ];
 
@@ -142,7 +169,7 @@ export async function POST(request: Request) {
         detections: view.detections.map((detection) => ({
           label: detection.label,
           outline: detection.outline.map(
-            ([x, y]) =>
+            ({ x, y }) =>
               [clampCoordinate(x), clampCoordinate(y)] as [number, number],
           ),
           confidence: Math.max(0, Math.min(1, detection.confidence)),

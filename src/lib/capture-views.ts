@@ -108,7 +108,7 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
   });
   renderer.setPixelRatio(1);
   renderer.setSize(CAPTURE_SIZE, CAPTURE_SIZE, false);
-  renderer.setClearColor(0xf3f5f6, 1);
+  renderer.setClearColor(0x0e1416, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
@@ -222,7 +222,7 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
     lightTarget.updateMatrixWorld(true);
 
     renderer.setRenderTarget(null);
-    renderer.setClearColor(0xf3f5f6, 1);
+    renderer.setClearColor(0x0e1416, 1);
     visualMesh.visible = true;
     triangleIdMesh.visible = false;
     renderer.render(scene, camera);

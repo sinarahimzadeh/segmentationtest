@@ -425,7 +425,7 @@
   position: relative;
   aspect-ratio: 1;
   overflow: hidden;
-  background: #f3f5f6;
+  background: var(--canvas);
 }
 
 .thumbnailImage img {

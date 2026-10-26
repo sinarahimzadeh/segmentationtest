@@ -1,6 +1,7 @@
 :root {
-  --background: #edf1f2;
-  --foreground: #182124;
+  --background: #0e1416;
+  --foreground: #e7edef;
+  color-scheme: dark;
 }
 
 html {

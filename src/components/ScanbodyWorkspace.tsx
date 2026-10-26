@@ -84,7 +84,7 @@ export default function ScanbodyWorkspace() {
     if (!container) return;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xedf1f2);
+    scene.background = new THREE.Color(0x0e1416);
 
     const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 10_000);
     camera.position.set(80, 65, 100);

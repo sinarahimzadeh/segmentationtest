@@ -1,5 +1,7 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -157,6 +159,20 @@ export async function POST(request: Request) {
       new HumanMessage({ content }),
     ]);
     const elapsedMs = Math.round(performance.now() - startedAt);
+
+    // TEMPORARY DEBUG SAVE — REMOVE LATER:
+    // This saves the exact structured JSON returned by the LLM, before the app
+    // converts {x, y} outline points into [x, y] arrays or performs 3D cleanup.
+    // To remove this feature later, delete this commented block and the two
+    // node:fs/promises / node:path imports at the top of this file.
+    const debugOutputDirectory = join(process.cwd(), "debug-output");
+    await mkdir(debugOutputDirectory, { recursive: true });
+    await writeFile(
+      join(debugOutputDirectory, "latest-llm-response.json"),
+      JSON.stringify(result.parsed, null, 2),
+      "utf8",
+    );
+
     const validViewNames = new Set(body.views.map((view) => view.name));
     const clampCoordinate = (coordinate: number) =>
       Math.max(0, Math.min(body.imageSize, coordinate));

@@ -27,6 +27,18 @@ import {
 } from "@/lib/stl-export";
 import { findGroupedTrianglesWithMultiViewAgreement } from "@/lib/triangle-selection";
 import {
+  BENCHMARK_STORAGE_VERSION,
+  compareTriangleSelections,
+  type SavedBenchmarkRun,
+} from "@/lib/benchmark";
+import {
+  BASELINE_SELECTION,
+  getOpenAIModelOption,
+  OPENAI_MODEL_OPTIONS,
+  type OpenAIModelId,
+  type ReasoningEffort,
+} from "@/lib/openai-models";
+import {
   CAPTURE_SIZE,
   type AnalysisResult,
   type CapturedView,
@@ -42,6 +54,7 @@ type ViewerState = {
 };
 
 type ModelInfo = {
+  key: string;
   name: string;
   triangles: number;
   dimensions: [number, number, number];
@@ -49,6 +62,43 @@ type ModelInfo = {
 
 const BASE_COLOR = new THREE.Color(0xcbd2d5);
 const HIGHLIGHT_COLOR = new THREE.Color(0xff5a36);
+
+async function createMeshKey(fileBytes: ArrayBuffer) {
+  const digest = await crypto.subtle.digest("SHA-256", fileBytes);
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function formatEstimatedCost(cost: number | null) {
+  if (cost === null) return "-";
+  return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(3)}`;
+}
+
+async function loadBenchmarkFiles(meshKey: string) {
+  const response = await fetch(
+    `/api/benchmarks?meshKey=${encodeURIComponent(meshKey)}`,
+    { cache: "no-store" },
+  );
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "Could not load benchmark files.");
+  }
+  return payload.runs as SavedBenchmarkRun[];
+}
+
+async function saveBenchmarkFile(run: SavedBenchmarkRun) {
+  const response = await fetch("/api/benchmarks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(run),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "Could not save benchmark file.");
+  }
+  return payload.savedPath as string;
+}
 
 function disposeObject(object: THREE.Object3D) {
   object.traverse((child) => {
@@ -75,6 +125,13 @@ export default function ScanbodyWorkspace() {
   const [selectedTriangleIds, setSelectedTriangleIds] = useState<Set<number>>(
     () => new Set(),
   );
+  const [selectedObjectCount, setSelectedObjectCount] = useState(0);
+  const [baselineRun, setBaselineRun] = useState<SavedBenchmarkRun | null>(null);
+  const [comparisonRuns, setComparisonRuns] = useState<SavedBenchmarkRun[]>([]);
+  const [comparisonModel, setComparisonModel] =
+    useState<OpenAIModelId>("gpt-6.1-sol");
+  const [comparisonEffort, setComparisonEffort] =
+    useState<ReasoningEffort>("low");
   const [analysisNotice, setAnalysisNotice] = useState<string | null>(null);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -206,11 +263,16 @@ export default function ScanbodyWorkspace() {
       setAnalysis(null);
       setCapturedViews([]);
       setSelectedTriangleIds(new Set());
+      setSelectedObjectCount(0);
+      setBaselineRun(null);
+      setComparisonRuns([]);
       triangleIdMapsRef.current.clear();
       originalPositionsRef.current = null;
 
       try {
-        const parsedGeometry = new STLLoader().parse(await file.arrayBuffer());
+        const fileBytes = await file.arrayBuffer();
+        const meshKey = await createMeshKey(fileBytes);
+        const parsedGeometry = new STLLoader().parse(fileBytes);
         const geometry = parsedGeometry.index
           ? parsedGeometry.toNonIndexed()
           : parsedGeometry;
@@ -264,6 +326,7 @@ export default function ScanbodyWorkspace() {
         const size = geometry.boundingBox?.getSize(new THREE.Vector3()) ?? new THREE.Vector3();
 
         setModelInfo({
+          key: meshKey,
           name: file.name,
           triangles: Math.floor(positions.count / 3),
           dimensions: [size.x, size.y, size.z],
@@ -275,6 +338,30 @@ export default function ScanbodyWorkspace() {
         const captures = captureModelViews(geometry);
         triangleIdMapsRef.current = captures.triangleIdMaps;
         setCapturedViews(captures.views);
+
+        // Load real JSON files from the project's benchmark-output folder.
+        try {
+          const savedRuns = await loadBenchmarkFiles(meshKey);
+          const savedBaseline =
+            savedRuns.find((run) => run.kind === "baseline") ?? null;
+          const savedComparisons = savedRuns.filter(
+            (run) => run.kind === "comparison",
+          );
+          setBaselineRun(savedBaseline);
+          setComparisonRuns(savedComparisons);
+          if (savedBaseline) {
+            setAnalysis(savedBaseline.analysis);
+            setSelectedTriangleIds(
+              new Set(savedBaseline.selectedTriangleIds),
+            );
+            setSelectedObjectCount(savedBaseline.objectCount);
+            setAnalysisNotice("Saved Sol Medium baseline loaded for this STL.");
+          }
+        } catch {
+          setAnalysisNotice(
+            "The STL loaded, but the saved benchmark files could not be opened.",
+          );
+        }
       } catch (loadError) {
         const message = loadError instanceof Error ? loadError.message : "Could not read this STL.";
         setError(message);
@@ -285,9 +372,9 @@ export default function ScanbodyWorkspace() {
     [resetViewer],
   );
 
-  const selectTrianglesFromAnalysis = useCallback((result: AnalysisResult) => {
+  const mapAnalysisToTriangles = useCallback((result: AnalysisResult) => {
     const mesh = meshRef.current;
-    if (!mesh) return;
+    if (!mesh) return { triangleIds: new Set<number>(), groupCount: 0 };
     const positions = mesh.geometry.getAttribute(
       "position",
     ) as THREE.BufferAttribute;
@@ -301,22 +388,21 @@ export default function ScanbodyWorkspace() {
 
     // Views now vote on each visible triangle. This replaces the old raw union
     // where a single inaccurate outline could permanently add mesh noise.
-    const { triangleIds } = findGroupedTrianglesWithMultiViewAgreement(
+    return findGroupedTrianglesWithMultiViewAgreement(
       triangleCount,
       positions,
       viewEvidence,
     );
-    setSelectedTriangleIds(triangleIds);
   }, []);
 
-  // Re-run local grouping and cleanup whenever the stored AI result or the
-  // local selection algorithm changes. This does not contact OpenAI again.
-  useEffect(() => {
-    if (analysis) selectTrianglesFromAnalysis(analysis);
-  }, [analysis, selectTrianglesFromAnalysis]);
-
-  const analyze = useCallback(async () => {
+  const runAnalysis = useCallback(async (
+    runKind: "baseline" | "comparison",
+  ) => {
     if (capturedViews.length === 0) return;
+    if (runKind === "comparison" && !baselineRun) {
+      setError("Run and save the Sol Medium baseline first.");
+      return;
+    }
     setBusyLabel("Finding scanbodies");
     setError(null);
     setAnalysisNotice(null);
@@ -327,6 +413,14 @@ export default function ScanbodyWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageSize: CAPTURE_SIZE,
+          run:
+            runKind === "baseline"
+              ? { type: "baseline" }
+              : {
+                  type: "comparison",
+                  model: comparisonModel,
+                  reasoningEffort: comparisonEffort,
+                },
           // Send every captured camera angle. A scanbody that is unclear in one
           // render can be much easier to recognize from another side.
           views: capturedViews.map((view) => ({
@@ -338,7 +432,10 @@ export default function ScanbodyWorkspace() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Analysis failed.");
       const result = payload as AnalysisResult;
+      const { triangleIds, groupCount } = mapAnalysisToTriangles(result);
       setAnalysis(result);
+      setSelectedTriangleIds(triangleIds);
+      setSelectedObjectCount(groupCount);
       const returnedDetectionCount = result.views.reduce(
         (total, view) => total + view.detections.length,
         0,
@@ -348,13 +445,90 @@ export default function ScanbodyWorkspace() {
           "OpenAI finished successfully but returned zero scanbodies. No triangles were selected.",
         );
       }
+
+      if (!modelInfo) return;
+      const runModel =
+        runKind === "baseline" ? BASELINE_SELECTION.model : comparisonModel;
+      const runEffort =
+        runKind === "baseline"
+          ? BASELINE_SELECTION.reasoningEffort
+          : comparisonEffort;
+      const metrics =
+        runKind === "comparison" && baselineRun
+          ? compareTriangleSelections(
+              baselineRun.selectedTriangleIds,
+              triangleIds,
+              baselineRun.objectCount,
+              groupCount,
+            )
+          : null;
+      const savedRun: SavedBenchmarkRun = {
+        id:
+          runKind === "baseline"
+            ? `baseline:v${BENCHMARK_STORAGE_VERSION}:${modelInfo.key}`
+            : `comparison:${modelInfo.key}:${Date.now()}:${runModel}:${runEffort}`,
+        storageVersion: BENCHMARK_STORAGE_VERSION,
+        meshKey: modelInfo.key,
+        meshName: modelInfo.name,
+        kind: runKind,
+        model: runModel,
+        reasoningEffort: runEffort,
+        createdAt: new Date().toISOString(),
+        analysis: result,
+        selectedTriangleIds: [...triangleIds].sort((a, b) => a - b),
+        objectCount: groupCount,
+        metrics,
+      };
+
+      try {
+        if (runKind === "baseline") {
+          // Replacing the baseline invalidates comparisons made against the old
+          // one, so those old candidate runs are cleared deliberately.
+          const savedPath = await saveBenchmarkFile(savedRun);
+          setBaselineRun(savedRun);
+          setComparisonRuns([]);
+          setAnalysisNotice(
+            `Sol Medium baseline saved to ${savedPath}`,
+          );
+        } else {
+          const savedPath = await saveBenchmarkFile(savedRun);
+          setComparisonRuns((current) => [savedRun, ...current]);
+          setAnalysisNotice(
+            `Comparison saved to ${savedPath}. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium.`,
+          );
+        }
+      } catch (storageError) {
+        const message =
+          storageError instanceof Error
+            ? storageError.message
+            : "browser storage failed";
+        setAnalysisNotice(
+          `Detection finished, but its JSON file could not be saved: ${message}`,
+        );
+      }
     } catch (analysisError) {
       const message = analysisError instanceof Error ? analysisError.message : "Analysis failed.";
       setError(message);
     } finally {
       setBusyLabel(null);
     }
-  }, [capturedViews]);
+  }, [
+    baselineRun,
+    capturedViews,
+    comparisonEffort,
+    comparisonModel,
+    mapAnalysisToTriangles,
+    modelInfo,
+  ]);
+
+  const showSavedRun = useCallback((run: SavedBenchmarkRun) => {
+    setAnalysis(run.analysis);
+    setSelectedTriangleIds(new Set(run.selectedTriangleIds));
+    setSelectedObjectCount(run.objectCount);
+    setAnalysisNotice(
+      `${run.analysis.meta.modelLabel} result loaded from browser storage.`,
+    );
+  }, []);
 
   const exportStl = useCallback(
     async (mode: StlExportMode) => {
@@ -399,11 +573,8 @@ export default function ScanbodyWorkspace() {
     (total, view) => total + view.detections.length,
     0,
   );
-  const totalApiTokens =
-    analysis &&
-    (analysis.meta.inputTokens !== null || analysis.meta.outputTokens !== null)
-      ? (analysis.meta.inputTokens ?? 0) + (analysis.meta.outputTokens ?? 0)
-      : null;
+  const comparisonModelOption = getOpenAIModelOption(comparisonModel);
+  const latestComparison = comparisonRuns[0] ?? null;
 
   return (
     <main className={styles.appShell}>
@@ -459,12 +630,12 @@ export default function ScanbodyWorkspace() {
           <section className={styles.panelSection}>
             <div className={styles.sectionHeading}>
               <ScanSearch size={16} />
-              <h2>Detection</h2>
+              <h2>Benchmark</h2>
             </div>
             <button
               className={styles.analyzeButton}
               type="button"
-              onClick={() => void analyze()}
+              onClick={() => void runAnalysis("baseline")}
               disabled={capturedViews.length === 0 || Boolean(busyLabel)}
             >
               {busyLabel === "Finding scanbodies" ? (
@@ -472,8 +643,130 @@ export default function ScanbodyWorkspace() {
               ) : (
                 <ScanSearch size={17} />
               )}
-              Analyze views
+              {baselineRun ? "Replace" : "Run"} Sol Medium baseline
             </button>
+
+            {baselineRun ? (
+              <div className={styles.baselineCard}>
+                <div className={styles.savedRunHeading}>
+                  <span><CheckCircle2 size={14} />Baseline saved</span>
+                  <button type="button" onClick={() => showSavedRun(baselineRun)}>
+                    Show
+                  </button>
+                </div>
+                <div className={styles.savedRunStats}>
+                  <span>{baselineRun.selectedTriangleIds.length.toLocaleString()} triangles</span>
+                  <span>{baselineRun.objectCount} objects</span>
+                  <span>{(baselineRun.analysis.meta.elapsedMs / 1000).toFixed(1)}s</span>
+                  <span>{formatEstimatedCost(baselineRun.analysis.meta.estimatedCostUsd)}</span>
+                </div>
+              </div>
+            ) : (
+              <p className={styles.benchmarkHint}>
+                This becomes the fixed answer that every cheaper model is compared with.
+              </p>
+            )}
+
+            <div className={styles.comparisonDivider}>Compare another run</div>
+            <div className={styles.selectorGrid}>
+              <label>
+                <span>OpenAI model</span>
+                <select
+                  value={comparisonModel}
+                  disabled={Boolean(busyLabel)}
+                  onChange={(event) => {
+                    const model = event.currentTarget.value as OpenAIModelId;
+                    const firstEffort = getOpenAIModelOption(model)
+                      .comparisonEfforts[0];
+                    setComparisonModel(model);
+                    setComparisonEffort(firstEffort);
+                  }}
+                >
+                  {OPENAI_MODEL_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Thinking</span>
+                <select
+                  value={comparisonEffort}
+                  disabled={Boolean(busyLabel)}
+                  onChange={(event) =>
+                    setComparisonEffort(
+                      event.currentTarget.value as ReasoningEffort,
+                    )
+                  }
+                >
+                  {comparisonModelOption.comparisonEfforts.map((effort) => (
+                    <option key={effort} value={effort}>
+                      {effort[0].toUpperCase() + effort.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <button
+              className={styles.comparisonButton}
+              type="button"
+              onClick={() => void runAnalysis("comparison")}
+              disabled={
+                !baselineRun ||
+                capturedViews.length === 0 ||
+                Boolean(busyLabel)
+              }
+            >
+              {busyLabel === "Finding scanbodies" ? (
+                <LoaderCircle className={styles.spin} size={17} />
+              ) : (
+                <ScanSearch size={17} />
+              )}
+              Run and compare
+            </button>
+
+            {latestComparison?.metrics ? (
+              <div className={styles.comparisonCard}>
+                <div className={styles.savedRunHeading}>
+                  <strong>{latestComparison.analysis.meta.modelLabel}</strong>
+                  <button
+                    type="button"
+                    onClick={() => showSavedRun(latestComparison)}
+                  >
+                    Show
+                  </button>
+                </div>
+                <div className={styles.metricGrid}>
+                  <span><strong>{latestComparison.metrics.sameTrianglePercent.toFixed(1)}%</strong>Same triangles</span>
+                  <span><strong>{latestComparison.metrics.baselineFoundPercent.toFixed(1)}%</strong>Baseline found</span>
+                  <span><strong>{latestComparison.metrics.missedBaselinePercent.toFixed(1)}%</strong>Missed</span>
+                  <span><strong>{latestComparison.metrics.extraCandidatePercent.toFixed(1)}%</strong>Extra</span>
+                </div>
+                <div className={styles.runCostLine}>
+                  <span>{(latestComparison.analysis.meta.elapsedMs / 1000).toFixed(1)} seconds</span>
+                  <span>{formatEstimatedCost(latestComparison.analysis.meta.estimatedCostUsd)}</span>
+                  <span>{latestComparison.objectCount} objects</span>
+                </div>
+              </div>
+            ) : null}
+
+            {comparisonRuns.length > 0 ? (
+              <div className={styles.runHistory}>
+                <span>Saved comparison table</span>
+                <div className={styles.runHistoryHeader}>
+                  <span>Model</span><span>Same</span><span>Time</span><span>Cost</span>
+                </div>
+                {comparisonRuns.slice(0, 8).map((run) => (
+                  <button key={run.id} type="button" onClick={() => showSavedRun(run)}>
+                    <span>{run.analysis.meta.modelLabel}</span>
+                    <strong>{run.metrics?.sameTrianglePercent.toFixed(1) ?? "-"}%</strong>
+                    <strong>{(run.analysis.meta.elapsedMs / 1000).toFixed(0)}s</strong>
+                    <strong>{formatEstimatedCost(run.analysis.meta.estimatedCostUsd)}</strong>
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             <div className={styles.pipeline}>
               <PipelineRow done={Boolean(modelInfo)} label="PCA alignment" />
@@ -494,6 +787,10 @@ export default function ScanbodyWorkspace() {
             <div className={styles.selectionSummary}>
               <span>Selected triangles</span>
               <strong>{selectedTriangleIds.size.toLocaleString()}</strong>
+            </div>
+            <div className={styles.selectionSummary}>
+              <span>Detected objects</span>
+              <strong>{selectedObjectCount}</strong>
             </div>
             <button
               className={styles.secondaryButton}
@@ -605,6 +902,10 @@ export default function ScanbodyWorkspace() {
 
           {analysis ? (
             <div className={styles.analysisFooter}>
+              <div title={analysis.meta.modelLabel}>
+                <span>Current run</span>
+                <strong>{analysis.meta.modelLabel.replace("GPT-6.1 ", "")}</strong>
+              </div>
               <div>
                 <span>2D detections</span>
                 <strong>{detectionCount}</strong>
@@ -614,12 +915,8 @@ export default function ScanbodyWorkspace() {
                 <strong>{selectedTriangleIds.size.toLocaleString()}</strong>
               </div>
               <div>
-                <span>API tokens</span>
-                <strong>
-                  {totalApiTokens === null
-                    ? "-"
-                    : totalApiTokens.toLocaleString()}
-                </strong>
+                <span>Est. cost</span>
+                <strong>{formatEstimatedCost(analysis.meta.estimatedCostUsd)}</strong>
               </div>
               <div>
                 <span>Model time</span>

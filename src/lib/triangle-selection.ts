@@ -610,6 +610,7 @@ export function findGroupedTrianglesWithMultiViewAgreement(
     modelDiagonal,
   );
   const selectedTriangleIds = new Set<number>();
+  let selectedGroupCount = 0;
   for (const group of groups) {
     const positiveViewCounts = new Map<number, number>();
     const confidenceSums = new Map<number, number>();
@@ -685,6 +686,9 @@ export function findGroupedTrianglesWithMultiViewAgreement(
       group.center,
       estimatedGroupRadius,
     );
+    // Count only groups that survived local cleanup and contributed real mesh
+    // triangles. This is the object count shown in benchmark comparisons.
+    if (cleanedGroup.size > 0) selectedGroupCount += 1;
     for (const triangleId of cleanedGroup) {
       selectedTriangleIds.add(triangleId);
     }
@@ -692,6 +696,6 @@ export function findGroupedTrianglesWithMultiViewAgreement(
 
   return {
     triangleIds: selectedTriangleIds,
-    groupCount: groups.length,
+    groupCount: selectedGroupCount,
   };
 }

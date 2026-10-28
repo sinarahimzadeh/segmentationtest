@@ -4,9 +4,26 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  BASELINE_SELECTION,
+  estimateOpenAICostUsd,
+  getModelRunLabel,
+  isAllowedComparisonSelection,
+  OPENAI_MODEL_IDS,
+  type OpenAIModelId,
+  type ReasoningEffort,
+} from "@/lib/openai-models";
 
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
+  run: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("baseline") }),
+    z.object({
+      type: z.literal("comparison"),
+      model: z.enum(OPENAI_MODEL_IDS),
+      reasoningEffort: z.enum(["low", "medium"]),
+    }),
+  ]),
   views: z
     .array(
       z.object({
@@ -17,6 +34,19 @@ const requestSchema = z.object({
     .min(1)
     .max(10),
 });
+
+function resolveModelSelection(run: z.infer<typeof requestSchema>["run"]): {
+  model: OpenAIModelId;
+  reasoningEffort: ReasoningEffort;
+} {
+  if (run.type === "baseline") return BASELINE_SELECTION;
+  if (!isAllowedComparisonSelection(run.model, run.reasoningEffort)) {
+    throw new Error(
+      `${run.model} does not support ${run.reasoningEffort} in this benchmark.`,
+    );
+  }
+  return { model: run.model, reasoningEffort: run.reasoningEffort };
+}
 
 const DEFAULT_OUTLINE_POINTS_PER_SCANBODY = 40;
 const MAX_OUTLINE_POINTS_PER_SCANBODY = 10_000;
@@ -125,12 +155,13 @@ export async function POST(request: Request) {
     const body = requestSchema.parse(await request.json());
     const outlinePointCount = getOutlinePointCount();
     const detectionSchema = createDetectionSchema(outlinePointCount);
-    const modelName = process.env.OPENAI_VISION_MODEL || "gpt-6.1-sol";
+    const selection = resolveModelSelection(body.run);
     const model = new ChatOpenAI({
-      model: modelName,
+      model: selection.model,
       apiKey: process.env.OPENAI_API_KEY,
       maxRetries: 1,
       useResponsesApi: true,
+      reasoning: { effort: selection.reasoningEffort },
     });
     const detector = model.withStructuredOutput(detectionSchema, {
       name: "scanbody_roi_detection",
@@ -193,17 +224,36 @@ export async function POST(request: Request) {
 
     const usage = (
       result.raw as {
-        usage_metadata?: { input_tokens?: number; output_tokens?: number };
+        usage_metadata?: {
+          input_tokens?: number;
+          output_tokens?: number;
+          input_token_details?: { cache_read?: number };
+        };
       }
     ).usage_metadata;
+    const inputTokens = usage?.input_tokens ?? null;
+    const cachedInputTokens = usage?.input_token_details?.cache_read ?? null;
+    const outputTokens = usage?.output_tokens ?? null;
     return NextResponse.json({
       views,
       meta: {
-        model: modelName,
+        model: selection.model,
+        modelLabel: getModelRunLabel(
+          selection.model,
+          selection.reasoningEffort,
+        ),
+        reasoningEffort: selection.reasoningEffort,
         outlinePointsPerScanbody: outlinePointCount,
         elapsedMs,
-        inputTokens: usage?.input_tokens ?? null,
-        outputTokens: usage?.output_tokens ?? null,
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
+        estimatedCostUsd: estimateOpenAICostUsd({
+          modelId: selection.model,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+        }),
       },
     });
   } catch (error) {

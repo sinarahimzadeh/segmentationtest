@@ -17,9 +17,13 @@ export type AnalysisResult = {
   views: ViewDetections[];
   meta: {
     model: string;
+    modelLabel: string;
+    reasoningEffort: "low" | "medium";
     elapsedMs: number;
     inputTokens: number | null;
+    cachedInputTokens: number | null;
     outputTokens: number | null;
+    estimatedCostUsd: number | null;
   };
 };
 

@@ -60,7 +60,7 @@
 .workspace {
   height: calc(100vh - 54px);
   display: grid;
-  grid-template-columns: 270px minmax(360px, 1fr) 330px;
+  grid-template-columns: 320px minmax(360px, 1fr) 350px;
   min-height: 0;
 }
 
@@ -101,6 +101,7 @@
 
 .uploadButton,
 .analyzeButton,
+.comparisonButton,
 .secondaryButton,
 .exportButton {
   width: 100%;
@@ -142,6 +143,18 @@
   background: var(--teal-dark);
 }
 
+.comparisonButton {
+  margin-top: 10px;
+  border-color: #2f716a;
+  background: #173b37;
+  color: #c7fff5;
+}
+
+.comparisonButton:hover:not(:disabled) {
+  border-color: #3d978d;
+  background: #1c4a44;
+}
+
 .secondaryButton {
   margin-top: 11px;
   border-color: var(--line);
@@ -162,6 +175,7 @@
 
 .uploadDisabled,
 .analyzeButton:disabled,
+.comparisonButton:disabled,
 .secondaryButton:disabled,
 .exportButton:disabled,
 .resetButton:disabled {
@@ -204,6 +218,200 @@
   gap: 9px;
 }
 
+.benchmarkHint {
+  margin: 9px 1px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.baselineCard,
+.comparisonCard {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #344449;
+  border-radius: 6px;
+  background: #111719;
+}
+
+.baselineCard {
+  border-color: #265c55;
+}
+
+.savedRunHeading,
+.savedRunHeading span,
+.runCostLine,
+.runHistory button {
+  display: flex;
+  align-items: center;
+}
+
+.savedRunHeading {
+  justify-content: space-between;
+  gap: 8px;
+  color: #dce5e7;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.savedRunHeading span {
+  gap: 5px;
+  color: #6ed5a7;
+}
+
+.savedRunHeading button,
+.runHistory button {
+  border: 0;
+  background: transparent;
+  color: #7fcfc5;
+  font: inherit;
+  cursor: pointer;
+}
+
+.savedRunStats {
+  margin-top: 7px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 9px;
+  color: #8f9ca1;
+  font-size: 9px;
+}
+
+.comparisonDivider {
+  margin: 15px 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #78868b;
+  font-size: 9px;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.comparisonDivider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+  content: "";
+}
+
+.selectorGrid {
+  display: grid;
+  grid-template-columns: 1.45fr 0.8fr;
+  gap: 8px;
+}
+
+.selectorGrid label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.selectorGrid label > span {
+  color: #8d9a9f;
+  font-size: 9px;
+}
+
+.selectorGrid select {
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #3b484d;
+  border-radius: 5px;
+  background: #111719;
+  color: #d8e0e2;
+  font: inherit;
+  font-size: 10px;
+}
+
+.selectorGrid select:disabled {
+  opacity: 0.5;
+}
+
+.metricGrid {
+  margin-top: 9px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.metricGrid span {
+  padding: 7px;
+  border-radius: 4px;
+  background: #182125;
+  color: #879499;
+  font-size: 8px;
+}
+
+.metricGrid strong {
+  display: block;
+  margin-bottom: 2px;
+  color: #e8eeef;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 13px;
+}
+
+.runCostLine {
+  margin-top: 8px;
+  justify-content: space-between;
+  gap: 6px;
+  color: #89969b;
+  font-size: 8px;
+}
+
+.runHistory {
+  margin-top: 10px;
+  display: grid;
+  gap: 3px;
+}
+
+.runHistory > span {
+  margin-bottom: 2px;
+  color: #78868b;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.runHistoryHeader,
+.runHistory button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px 32px 45px;
+  align-items: center;
+  gap: 5px;
+}
+
+.runHistoryHeader {
+  padding: 3px 0;
+  color: #657278;
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.runHistoryHeader span:not(:first-child) {
+  text-align: right;
+}
+
+.runHistory button {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 0;
+  border-bottom: 1px solid #283237;
+  font-size: 9px;
+}
+
+.runHistory button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runHistory button strong {
+  color: #dce5e7;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  text-align: right;
+}
+
 .pipelineRow {
   gap: 8px;
   min-height: 18px;
@@ -233,6 +441,10 @@
   background: #111719;
   font-size: 11px;
   color: var(--muted);
+}
+
+.selectionSummary + .selectionSummary {
+  margin-top: 8px;
 }
 
 .selectionSummary strong {
@@ -497,7 +709,7 @@
 
 .analysisFooter {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   border-top: 1px solid var(--line);
   background: #111719;
 }
@@ -542,7 +754,7 @@
 
 @media (max-width: 1050px) {
   .workspace {
-    grid-template-columns: 235px minmax(340px, 1fr) 270px;
+    grid-template-columns: 285px minmax(340px, 1fr) 290px;
   }
 }
 

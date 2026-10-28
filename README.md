@@ -19,7 +19,6 @@ Create `.env.local` in this folder:
 
 ```env
 OPENAI_API_KEY=your_api_key_here
-OPENAI_VISION_MODEL=gpt-6.1-sol
 SCANBODY_OUTLINE_POINTS=40
 ```
 
@@ -36,6 +35,19 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Model benchmark
+
+1. Choose an STL and run the fixed **GPT-6.1 Sol / Medium** baseline.
+2. Select a cheaper OpenAI model and thinking level.
+3. Run the comparison. The app compares the final 3D triangle IDs, not just
+   the 2D outlines.
+
+The app saves baseline and comparison runs as normal JSON files under
+`benchmark-output/<STL SHA-256>/`. Each file contains the returned outline JSON,
+final triangle IDs, detected object count, model time, estimated API cost, and
+quality metrics. Reopening the same STL loads its saved files. Replacing the
+baseline clears comparison files made against the old baseline.
+
 ## Code map
 
 - `src/lib/capture-views.ts` renders the eight normal images and the hidden
@@ -44,6 +56,12 @@ Open [http://localhost:3000](http://localhost:3000).
   triangle IDs beneath it.
 - `src/lib/stl-export.ts` writes selected or remaining triangles as binary STL
   while preserving the uploaded file's original coordinate system.
+- `src/lib/openai-models.ts` is the single OpenAI model, reasoning, and pricing
+  list used by both the UI and API route.
+- `src/lib/benchmark.ts` calculates triangle-level similarity to the saved Sol
+  Medium baseline.
+- `src/app/api/benchmarks/route.ts` saves and reloads benchmark JSON files from
+  the project's `benchmark-output` folder.
 - `src/components/ScanbodyWorkspace.tsx` loads the STL, combines selected
   triangle IDs, and colors those faces orange in the 3D viewer.
 - `src/app/api/analyze/route.ts` sends the camera images to the vision model and

@@ -1,5 +1,5 @@
 import type { AnalysisResult } from "./scanbody-types";
-import type { OpenAIModelId, ReasoningEffort } from "./openai-models";
+import type { AiModelId, ReasoningEffort } from "./ai-models";
 
 export const BENCHMARK_STORAGE_VERSION = 1;
 
@@ -20,7 +20,7 @@ export type SavedBenchmarkRun = {
   meshKey: string;
   meshName: string;
   kind: "baseline" | "comparison";
-  model: OpenAIModelId;
+  model: AiModelId;
   reasoningEffort: ReasoningEffort;
   createdAt: string;
   analysis: AnalysisResult;

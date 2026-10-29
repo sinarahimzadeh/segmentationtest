@@ -7,7 +7,7 @@ A small local Next.js prototype that finds likely dental scanbodies in an STL sc
 1. The STL is loaded in the browser.
 2. PCA centers and consistently turns the model.
 3. Three.js takes eight JPEG pictures from fixed angles.
-4. LangChain sends those pictures to an OpenAI vision model.
+4. LangChain sends those pictures to the selected OpenAI or Google Gemini model.
 5. The API returns strict JSON outlines around likely scanbodies.
 6. The app projects those outlines back onto the 3D mesh and highlights the matching areas.
 
@@ -19,6 +19,7 @@ Create `.env.local` in this folder:
 
 ```env
 OPENAI_API_KEY=your_api_key_here
+GOOGLE_API_KEY=your_google_ai_studio_key_here
 SCANBODY_OUTLINE_POINTS=40
 ```
 
@@ -38,7 +39,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Model benchmark
 
 1. Choose an STL and run the fixed **GPT-6.1 Sol / Medium** baseline.
-2. Select a cheaper OpenAI model and thinking level.
+2. Select an OpenAI or Google Gemini model and thinking level.
 3. Run the comparison. The app compares the final 3D triangle IDs, not just
    the 2D outlines.
 
@@ -56,8 +57,8 @@ baseline clears comparison files made against the old baseline.
   triangle IDs beneath it.
 - `src/lib/stl-export.ts` writes selected or remaining triangles as binary STL
   while preserving the uploaded file's original coordinate system.
-- `src/lib/openai-models.ts` is the single OpenAI model, reasoning, and pricing
-  list used by both the UI and API route.
+- `src/lib/ai-models.ts` is the shared OpenAI and Gemini model, reasoning, and
+  paid-price list used by both the UI and API route.
 - `src/lib/benchmark.ts` calculates triangle-level similarity to the saved Sol
   Medium baseline.
 - `src/app/api/benchmarks/route.ts` saves and reloads benchmark JSON files from

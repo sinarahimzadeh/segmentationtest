@@ -32,12 +32,12 @@ import {
   type SavedBenchmarkRun,
 } from "@/lib/benchmark";
 import {
+  AI_MODEL_OPTIONS,
   BASELINE_SELECTION,
-  getOpenAIModelOption,
-  OPENAI_MODEL_OPTIONS,
-  type OpenAIModelId,
+  getAiModelOption,
+  type AiModelId,
   type ReasoningEffort,
-} from "@/lib/openai-models";
+} from "@/lib/ai-models";
 import {
   CAPTURE_SIZE,
   type AnalysisResult,
@@ -73,6 +73,18 @@ async function createMeshKey(fileBytes: ArrayBuffer) {
 function formatEstimatedCost(cost: number | null) {
   if (cost === null) return "-";
   return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(3)}`;
+}
+
+function formatRunCost(
+  meta: AnalysisResult["meta"],
+  compact = false,
+) {
+  if (!meta.freeTierEligible) {
+    return formatEstimatedCost(meta.estimatedCostUsd);
+  }
+  return compact
+    ? "Free*"
+    : `Free tier · ${formatEstimatedCost(meta.estimatedCostUsd)} paid`;
 }
 
 async function loadBenchmarkFiles(meshKey: string) {
@@ -129,7 +141,7 @@ export default function ScanbodyWorkspace() {
   const [baselineRun, setBaselineRun] = useState<SavedBenchmarkRun | null>(null);
   const [comparisonRuns, setComparisonRuns] = useState<SavedBenchmarkRun[]>([]);
   const [comparisonModel, setComparisonModel] =
-    useState<OpenAIModelId>("gpt-6.1-sol");
+    useState<AiModelId>("gpt-6.1-sol");
   const [comparisonEffort, setComparisonEffort] =
     useState<ReasoningEffort>("low");
   const [analysisNotice, setAnalysisNotice] = useState<string | null>(null);
@@ -442,7 +454,7 @@ export default function ScanbodyWorkspace() {
       );
       if (returnedDetectionCount === 0) {
         setAnalysisNotice(
-          "OpenAI finished successfully but returned zero scanbodies. No triangles were selected.",
+          "The AI model finished successfully but returned zero scanbodies. No triangles were selected.",
         );
       }
 
@@ -573,7 +585,7 @@ export default function ScanbodyWorkspace() {
     (total, view) => total + view.detections.length,
     0,
   );
-  const comparisonModelOption = getOpenAIModelOption(comparisonModel);
+  const comparisonModelOption = getAiModelOption(comparisonModel);
   const latestComparison = comparisonRuns[0] ?? null;
 
   return (
@@ -658,7 +670,7 @@ export default function ScanbodyWorkspace() {
                   <span>{baselineRun.selectedTriangleIds.length.toLocaleString()} triangles</span>
                   <span>{baselineRun.objectCount} objects</span>
                   <span>{(baselineRun.analysis.meta.elapsedMs / 1000).toFixed(1)}s</span>
-                  <span>{formatEstimatedCost(baselineRun.analysis.meta.estimatedCostUsd)}</span>
+                  <span>{formatRunCost(baselineRun.analysis.meta, true)}</span>
                 </div>
               </div>
             ) : (
@@ -670,23 +682,36 @@ export default function ScanbodyWorkspace() {
             <div className={styles.comparisonDivider}>Compare another run</div>
             <div className={styles.selectorGrid}>
               <label>
-                <span>OpenAI model</span>
+                <span>AI model</span>
                 <select
                   value={comparisonModel}
                   disabled={Boolean(busyLabel)}
                   onChange={(event) => {
-                    const model = event.currentTarget.value as OpenAIModelId;
-                    const firstEffort = getOpenAIModelOption(model)
+                    const model = event.currentTarget.value as AiModelId;
+                    const firstEffort = getAiModelOption(model)
                       .comparisonEfforts[0];
                     setComparisonModel(model);
                     setComparisonEffort(firstEffort);
                   }}
                 >
-                  {OPENAI_MODEL_OPTIONS.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
+                  <optgroup label="OpenAI">
+                    {AI_MODEL_OPTIONS.filter(
+                      (option) => option.provider === "openai",
+                    ).map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Google Gemini">
+                    {AI_MODEL_OPTIONS.filter(
+                      (option) => option.provider === "google",
+                    ).map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </label>
               <label>
@@ -708,6 +733,12 @@ export default function ScanbodyWorkspace() {
                 </select>
               </label>
             </div>
+            {comparisonModelOption.freeTierEligible ? (
+              <p className={styles.freeTierHint}>
+                Free-tier call: $0 until Google&apos;s quota. The paid-price
+                equivalent is still saved for later comparison.
+              </p>
+            ) : null}
             <button
               className={styles.comparisonButton}
               type="button"
@@ -745,7 +776,7 @@ export default function ScanbodyWorkspace() {
                 </div>
                 <div className={styles.runCostLine}>
                   <span>{(latestComparison.analysis.meta.elapsedMs / 1000).toFixed(1)} seconds</span>
-                  <span>{formatEstimatedCost(latestComparison.analysis.meta.estimatedCostUsd)}</span>
+                  <span>{formatRunCost(latestComparison.analysis.meta)}</span>
                   <span>{latestComparison.objectCount} objects</span>
                 </div>
               </div>
@@ -762,7 +793,7 @@ export default function ScanbodyWorkspace() {
                     <span>{run.analysis.meta.modelLabel}</span>
                     <strong>{run.metrics?.sameTrianglePercent.toFixed(1) ?? "-"}%</strong>
                     <strong>{(run.analysis.meta.elapsedMs / 1000).toFixed(0)}s</strong>
-                    <strong>{formatEstimatedCost(run.analysis.meta.estimatedCostUsd)}</strong>
+                    <strong>{formatRunCost(run.analysis.meta, true)}</strong>
                   </button>
                 ))}
               </div>
@@ -916,7 +947,7 @@ export default function ScanbodyWorkspace() {
               </div>
               <div>
                 <span>Est. cost</span>
-                <strong>{formatEstimatedCost(analysis.meta.estimatedCostUsd)}</strong>
+                <strong>{formatRunCost(analysis.meta, true)}</strong>
               </div>
               <div>
                 <span>Model time</span>

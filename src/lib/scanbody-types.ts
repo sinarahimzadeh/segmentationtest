@@ -1,3 +1,5 @@
+import type { AiProvider, ReasoningEffort } from "./ai-models";
+
 export const CAPTURE_SIZE = 1024;
 
 export type ImagePoint = [number, number];
@@ -18,12 +20,16 @@ export type AnalysisResult = {
   meta: {
     model: string;
     modelLabel: string;
-    reasoningEffort: "low" | "medium";
+    provider: AiProvider;
+    reasoningEffort: ReasoningEffort;
     elapsedMs: number;
     inputTokens: number | null;
     cachedInputTokens: number | null;
     outputTokens: number | null;
+    // For Gemini free-tier calls the actual charge can be $0. This value is
+    // the current paid Standard equivalent so models remain comparable.
     estimatedCostUsd: number | null;
+    freeTierEligible: boolean;
   };
 };
 

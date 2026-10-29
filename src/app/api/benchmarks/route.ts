@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { OPENAI_MODEL_IDS } from "@/lib/openai-models";
+import { AI_MODEL_IDS } from "@/lib/ai-models";
 
 const meshKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
 const pointSchema = z.tuple([z.number(), z.number()]);
@@ -22,12 +22,14 @@ const analysisSchema = z.object({
   meta: z.object({
     model: z.string(),
     modelLabel: z.string(),
-    reasoningEffort: z.enum(["low", "medium"]),
+    provider: z.enum(["openai", "google"]).default("openai"),
+    reasoningEffort: z.enum(["minimal", "low", "medium", "high"]),
     elapsedMs: z.number(),
     inputTokens: z.number().nullable(),
     cachedInputTokens: z.number().nullable(),
     outputTokens: z.number().nullable(),
     estimatedCostUsd: z.number().nullable(),
+    freeTierEligible: z.boolean().default(false),
   }),
 });
 const metricsSchema = z.object({
@@ -46,8 +48,8 @@ const savedRunSchema = z.object({
   meshKey: meshKeySchema,
   meshName: z.string().min(1).max(500),
   kind: z.enum(["baseline", "comparison"]),
-  model: z.enum(OPENAI_MODEL_IDS),
-  reasoningEffort: z.enum(["low", "medium"]),
+  model: z.enum(AI_MODEL_IDS),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high"]),
   createdAt: z.string(),
   analysis: analysisSchema,
   selectedTriangleIds: z.array(z.number().int().nonnegative()),

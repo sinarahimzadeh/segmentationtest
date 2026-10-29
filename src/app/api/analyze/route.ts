@@ -1,18 +1,21 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  AI_MODEL_IDS,
   BASELINE_SELECTION,
-  estimateOpenAICostUsd,
+  estimatePaidCostUsd,
+  getAiModelOption,
   getModelRunLabel,
   isAllowedComparisonSelection,
-  OPENAI_MODEL_IDS,
-  type OpenAIModelId,
+  type AiModelId,
+  type AiProvider,
   type ReasoningEffort,
-} from "@/lib/openai-models";
+} from "@/lib/ai-models";
 
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
@@ -20,8 +23,8 @@ const requestSchema = z.object({
     z.object({ type: z.literal("baseline") }),
     z.object({
       type: z.literal("comparison"),
-      model: z.enum(OPENAI_MODEL_IDS),
-      reasoningEffort: z.enum(["low", "medium"]),
+      model: z.enum(AI_MODEL_IDS),
+      reasoningEffort: z.enum(["minimal", "low", "medium", "high"]),
     }),
   ]),
   views: z
@@ -36,16 +39,26 @@ const requestSchema = z.object({
 });
 
 function resolveModelSelection(run: z.infer<typeof requestSchema>["run"]): {
-  model: OpenAIModelId;
+  model: AiModelId;
+  provider: AiProvider;
   reasoningEffort: ReasoningEffort;
 } {
-  if (run.type === "baseline") return BASELINE_SELECTION;
+  if (run.type === "baseline") {
+    return {
+      ...BASELINE_SELECTION,
+      provider: getAiModelOption(BASELINE_SELECTION.model).provider,
+    };
+  }
   if (!isAllowedComparisonSelection(run.model, run.reasoningEffort)) {
     throw new Error(
       `${run.model} does not support ${run.reasoningEffort} in this benchmark.`,
     );
   }
-  return { model: run.model, reasoningEffort: run.reasoningEffort };
+  return {
+    model: run.model,
+    provider: getAiModelOption(run.model).provider,
+    reasoningEffort: run.reasoningEffort,
+  };
 }
 
 const DEFAULT_OUTLINE_POINTS_PER_SCANBODY = 40;
@@ -79,7 +92,10 @@ function createDetectionSchema(pointCount: number) {
           .describe("The exact VIEW_ID associated with this image."),
         detections: z.array(
           z.object({
-            label: z.literal("scanbody"),
+            // Use a one-value enum instead of z.literal(). Zod converts a
+            // literal to JSON Schema `const`, which Gemini rejects. Both
+            // OpenAI and Gemini accept the equivalent single-value `enum`.
+            label: z.enum(["scanbody"]),
             outline: z
               .array(
                 z.object({
@@ -141,33 +157,54 @@ when no manufactured post is visible.`;
 }
 
 export async function POST(request: Request) {
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json(
-      {
-        error:
-          "OPENAI_API_KEY is missing. Add it to .env.local and restart the server.",
-      },
-      { status: 503 },
-    );
-  }
-
   try {
     const body = requestSchema.parse(await request.json());
     const outlinePointCount = getOutlinePointCount();
     const detectionSchema = createDetectionSchema(outlinePointCount);
     const selection = resolveModelSelection(body.run);
-    const model = new ChatOpenAI({
-      model: selection.model,
-      apiKey: process.env.OPENAI_API_KEY,
-      maxRetries: 1,
-      useResponsesApi: true,
-      reasoning: { effort: selection.reasoningEffort },
-    });
-    const detector = model.withStructuredOutput(detectionSchema, {
-      name: "scanbody_roi_detection",
-      strict: true,
-      includeRaw: true,
-    });
+    const modelOption = getAiModelOption(selection.model);
+
+    if (selection.provider === "openai" && !process.env.OPENAI_API_KEY) {
+      throw new Error(
+        "OPENAI_API_KEY is missing. Add it to .env.local and restart the server.",
+      );
+    }
+    if (selection.provider === "google" && !process.env.GOOGLE_API_KEY) {
+      throw new Error(
+        "GOOGLE_API_KEY is missing. Add it to .env.local and restart the server.",
+      );
+    }
+
+    const detector =
+      selection.provider === "openai"
+        ? new ChatOpenAI({
+            model: selection.model,
+            apiKey: process.env.OPENAI_API_KEY,
+            maxRetries: 1,
+            useResponsesApi: true,
+            reasoning: { effort: selection.reasoningEffort },
+          }).withStructuredOutput(detectionSchema, {
+            name: "scanbody_roi_detection",
+            strict: true,
+            includeRaw: true,
+          })
+        : new ChatGoogleGenerativeAI({
+            model: selection.model,
+            apiKey: process.env.GOOGLE_API_KEY,
+            maxRetries: 1,
+            maxOutputTokens: 65_536,
+            thinkingConfig: {
+              // The installed LangChain type has not yet added MINIMAL, but the
+              // current Gemini API supports it for Flash-Lite.
+              thinkingLevel: selection.reasoningEffort.toUpperCase() as
+                | "LOW"
+                | "MEDIUM"
+                | "HIGH",
+            },
+          }).withStructuredOutput(detectionSchema, {
+            name: "scanbody_roi_detection",
+            includeRaw: true,
+          });
 
     const content: HumanMessage["content"] = [
       {
@@ -242,18 +279,20 @@ export async function POST(request: Request) {
           selection.model,
           selection.reasoningEffort,
         ),
+        provider: selection.provider,
         reasoningEffort: selection.reasoningEffort,
         outlinePointsPerScanbody: outlinePointCount,
         elapsedMs,
         inputTokens,
         cachedInputTokens,
         outputTokens,
-        estimatedCostUsd: estimateOpenAICostUsd({
+        estimatedCostUsd: estimatePaidCostUsd({
           modelId: selection.model,
           inputTokens,
           cachedInputTokens,
           outputTokens,
         }),
+        freeTierEligible: modelOption.freeTierEligible,
       },
     });
   } catch (error) {

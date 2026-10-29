@@ -19,6 +19,7 @@ import {
 
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
+  saveFiles: z.boolean().optional().default(true),
   run: z.discriminatedUnion("type", [
     z.object({ type: z.literal("baseline") }),
     z.object({
@@ -96,17 +97,11 @@ function createDetectionSchema(pointCount: number) {
             // literal to JSON Schema `const`, which Gemini rejects. Both
             // OpenAI and Gemini accept the equivalent single-value `enum`.
             label: z.enum(["scanbody"]),
-            outline: z
-              .array(
-                z.object({
-                  x: z.number().describe("Horizontal pixel coordinate."),
-                  y: z.number().describe("Vertical pixel coordinate."),
-                }),
-              )
-              .length(pointCount)
-              .describe(
-                `Exactly ${pointCount} ordered {x, y} pixel coordinates tracing the visible scanbody boundary.`,
-              ),
+            // One compact string avoids repeating the JSON keys "x" and "y"
+            // for every point. The app parses it back into normal coordinates.
+            outline: z.string().describe(
+              `Exactly ${pointCount} ordered integer pixel pairs tracing the visible boundary, formatted only as "x,y x,y x,y".`,
+            ),
             confidence: z
               .number()
               .describe("Confidence from 0 to 1 that this is a scanbody."),
@@ -114,6 +109,19 @@ function createDetectionSchema(pointCount: number) {
         ),
       }),
     ),
+  });
+}
+
+/**
+ * Converts the compact LLM outline back into coordinates used by the existing
+ * triangle mapper. The regex tolerates harmless spacing differences so one
+ * formatting mistake does not waste an otherwise successful paid response.
+ */
+function parseCompactOutline(value: string) {
+  const pairs = value.match(/-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?/g) ?? [];
+  return pairs.map((pair) => {
+    const [x, y] = pair.split(",").map((coordinate) => Number(coordinate.trim()));
+    return [x, y] as [number, number];
   });
 }
 
@@ -146,14 +154,16 @@ empty.
 The images are different camera views of the same mesh. Some images can show
 the underside, where no scanbody is visible. Treat every view independently.
 For every visible scanbody, trace its visible outer boundary with exactly
-${pointCount} ordered points. Follow the real shape closely, including flat
-sides and corners. Do not repeat the first point at the end. Use the exact
-VIEW_ID supplied before each image. Return every visible scanbody separately,
-including partially visible ones. When a likely scanbody is visible but you are
-not fully certain, include it with lower confidence instead of returning an
-empty view. An empty top or occlusal view is valid only after checking that no
-repeated protruding manufactured posts are present. Never invent a detection
-when no manufactured post is visible.`;
+${pointCount} ordered whole-pixel points. Put all points into the single outline
+string using only this compact format: "430,250 438,229 455,215". Do not put
+brackets, x/y keys, semicolons, or explanations inside the string. Follow the
+real shape closely, including flat sides and corners. Do not repeat the first
+point at the end. Use the exact VIEW_ID supplied before each image. Return every
+visible scanbody separately, including partially visible ones. When a likely
+scanbody is visible but you are not fully certain, include it with lower
+confidence instead of returning an empty view. An empty top or occlusal view is
+valid only after checking that no repeated protruding manufactured posts are
+present. Never invent a detection when no manufactured post is visible.`;
 }
 
 export async function POST(request: Request) {
@@ -209,7 +219,7 @@ export async function POST(request: Request) {
     const content: HumanMessage["content"] = [
       {
         type: "text",
-        text: `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as exactly ${outlinePointCount} ordered objects with numeric x and y pixel coordinates.`,
+        text: `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing exactly ${outlinePointCount} ordered whole-number pixel pairs in "x,y x,y" format.`,
       },
     ];
 
@@ -230,16 +240,18 @@ export async function POST(request: Request) {
 
     // TEMPORARY DEBUG SAVE — REMOVE LATER:
     // This saves the exact structured JSON returned by the LLM, before the app
-    // converts {x, y} outline points into [x, y] arrays or performs 3D cleanup.
+    // converts the compact outline string into [x, y] arrays or performs 3D cleanup.
     // To remove this feature later, delete this commented block and the two
     // node:fs/promises / node:path imports at the top of this file.
-    const debugOutputDirectory = join(process.cwd(), "debug-output");
-    await mkdir(debugOutputDirectory, { recursive: true });
-    await writeFile(
-      join(debugOutputDirectory, "latest-llm-response.json"),
-      JSON.stringify(result.parsed, null, 2),
-      "utf8",
-    );
+    if (body.saveFiles) {
+      const debugOutputDirectory = join(process.cwd(), "debug-output");
+      await mkdir(debugOutputDirectory, { recursive: true });
+      await writeFile(
+        join(debugOutputDirectory, "latest-llm-response.json"),
+        JSON.stringify(result.parsed, null, 2),
+        "utf8",
+      );
+    }
 
     const validViewNames = new Set(body.views.map((view) => view.name));
     const clampCoordinate = (coordinate: number) =>
@@ -249,14 +261,20 @@ export async function POST(request: Request) {
       .filter((view) => validViewNames.has(view.view))
       .map((view) => ({
         view: view.view,
-        detections: view.detections.map((detection) => ({
-          label: detection.label,
-          outline: detection.outline.map(
-            ({ x, y }) =>
-              [clampCoordinate(x), clampCoordinate(y)] as [number, number],
-          ),
-          confidence: Math.max(0, Math.min(1, detection.confidence)),
-        })),
+        detections: view.detections.flatMap((detection) => {
+          const outline = parseCompactOutline(detection.outline);
+          // Three points are the minimum needed to form a polygon. Ignore only
+          // a malformed detection instead of failing and losing the whole run.
+          if (outline.length < 3) return [];
+          return [{
+            label: detection.label,
+            outline: outline.map(
+              ([x, y]) =>
+                [clampCoordinate(x), clampCoordinate(y)] as [number, number],
+            ),
+            confidence: Math.max(0, Math.min(1, detection.confidence)),
+          }];
+        }),
       }));
 
     const usage = (

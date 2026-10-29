@@ -148,6 +148,7 @@ export default function ScanbodyWorkspace() {
   const [analysisNotice, setAnalysisNotice] = useState<string | null>(null);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saveResultFiles, setSaveResultFiles] = useState(true);
   const [previewViewName, setPreviewViewName] = useState<string | null>(null);
 
   useEffect(() => {
@@ -431,7 +432,7 @@ export default function ScanbodyWorkspace() {
   ) => {
     if (capturedViews.length === 0) return;
     if (runKind === "comparison" && !baselineRun) {
-      setError("Run and save the Sol Medium baseline first.");
+      setError("Run the Sol Medium baseline first.");
       return;
     }
     setBusyLabel("Finding scanbodies");
@@ -444,6 +445,9 @@ export default function ScanbodyWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageSize: CAPTURE_SIZE,
+          // This controls both benchmark files and the temporary raw-response
+          // JSON. Detection and in-memory comparison still work when it is off.
+          saveFiles: saveResultFiles,
           run:
             runKind === "baseline"
               ? { type: "baseline" }
@@ -511,31 +515,45 @@ export default function ScanbodyWorkspace() {
         metrics,
       };
 
-      try {
-        if (runKind === "baseline") {
-          // Replacing the baseline invalidates comparisons made against the old
-          // one, so those old candidate runs are cleared deliberately.
-          const savedPath = await saveBenchmarkFile(savedRun);
-          setBaselineRun(savedRun);
-          setComparisonRuns([]);
+      // Results always remain available in memory for the current session,
+      // regardless of whether writing JSON files is enabled.
+      if (runKind === "baseline") {
+        // Replacing the baseline invalidates comparisons made against the old
+        // one, so those old candidate runs are cleared deliberately.
+        setBaselineRun(savedRun);
+        setComparisonRuns([]);
+      } else {
+        setComparisonRuns((current) => [savedRun, ...current]);
+      }
+
+      if (!saveResultFiles) {
+        setAnalysisNotice(
+          runKind === "baseline"
+            ? "Sol Medium baseline is ready for this session. File saving is off."
+            : `Comparison is ready for this session. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium. File saving is off.`,
+        );
+      } else {
+        try {
+          if (runKind === "baseline") {
+            const savedPath = await saveBenchmarkFile(savedRun);
+            setAnalysisNotice(
+              `Sol Medium baseline saved to ${savedPath}`,
+            );
+          } else {
+            const savedPath = await saveBenchmarkFile(savedRun);
+            setAnalysisNotice(
+              `Comparison saved to ${savedPath}. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium.`,
+            );
+          }
+        } catch (storageError) {
+          const message =
+            storageError instanceof Error
+              ? storageError.message
+              : "file saving failed";
           setAnalysisNotice(
-            `Sol Medium baseline saved to ${savedPath}`,
-          );
-        } else {
-          const savedPath = await saveBenchmarkFile(savedRun);
-          setComparisonRuns((current) => [savedRun, ...current]);
-          setAnalysisNotice(
-            `Comparison saved to ${savedPath}. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium.`,
+            `Detection finished, but its JSON file could not be saved: ${message}`,
           );
         }
-      } catch (storageError) {
-        const message =
-          storageError instanceof Error
-            ? storageError.message
-            : "browser storage failed";
-        setAnalysisNotice(
-          `Detection finished, but its JSON file could not be saved: ${message}`,
-        );
       }
     } catch (analysisError) {
       const message = analysisError instanceof Error ? analysisError.message : "Analysis failed.";
@@ -550,6 +568,7 @@ export default function ScanbodyWorkspace() {
     comparisonModel,
     mapAnalysisToTriangles,
     modelInfo,
+    saveResultFiles,
   ]);
 
   const showSavedRun = useCallback((run: SavedBenchmarkRun) => {
@@ -557,7 +576,7 @@ export default function ScanbodyWorkspace() {
     setSelectedTriangleIds(new Set(run.selectedTriangleIds));
     setSelectedObjectCount(run.objectCount);
     setAnalysisNotice(
-      `${run.analysis.meta.modelLabel} result loaded from browser storage.`,
+      `${run.analysis.meta.modelLabel} result loaded.`,
     );
   }, []);
 
@@ -666,6 +685,21 @@ export default function ScanbodyWorkspace() {
               <ScanSearch size={16} />
               <h2>Benchmark</h2>
             </div>
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Save result files</strong>
+                <small>Benchmark and raw LLM JSON</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={saveResultFiles}
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => setSaveResultFiles(event.currentTarget.checked)}
+              />
+              <span className={styles.toggleTrack} aria-hidden="true">
+                <span />
+              </span>
+            </label>
             <button
               className={styles.analyzeButton}
               type="button"
@@ -683,7 +717,7 @@ export default function ScanbodyWorkspace() {
             {baselineRun ? (
               <div className={styles.baselineCard}>
                 <div className={styles.savedRunHeading}>
-                  <span><CheckCircle2 size={14} />Baseline saved</span>
+                  <span><CheckCircle2 size={14} />Baseline ready</span>
                   <button type="button" onClick={() => showSavedRun(baselineRun)}>
                     Show
                   </button>
@@ -806,7 +840,7 @@ export default function ScanbodyWorkspace() {
 
             {comparisonRuns.length > 0 ? (
               <div className={styles.runHistory}>
-                <span>Saved comparison table</span>
+                <span>Comparison table</span>
                 <div className={styles.runHistoryHeader}>
                   <span>Model</span><span>Same</span><span>Time</span><span>Cost</span>
                 </div>

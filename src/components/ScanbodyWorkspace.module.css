@@ -225,6 +225,76 @@
   line-height: 1.45;
 }
 
+.saveToggle {
+  margin: 2px 0 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.saveToggle > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.saveToggle strong {
+  color: #d6dfe1;
+  font-size: 10px;
+}
+
+.saveToggle small {
+  color: #7f8d92;
+  font-size: 8px;
+}
+
+.saveToggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggleTrack {
+  width: 32px;
+  height: 18px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid #46545a;
+  border-radius: 999px;
+  background: #192226;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.toggleTrack span {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8b999e;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.saveToggle input:checked + .toggleTrack {
+  border-color: #279b8d;
+  background: #176d63;
+}
+
+.saveToggle input:checked + .toggleTrack span {
+  background: white;
+  transform: translateX(14px);
+}
+
+.saveToggle input:focus-visible + .toggleTrack {
+  outline: 2px solid #69cbbf;
+  outline-offset: 2px;
+}
+
+.saveToggle input:disabled + .toggleTrack {
+  opacity: 0.45;
+}
+
 .baselineCard,
 .comparisonCard {
   margin-top: 10px;

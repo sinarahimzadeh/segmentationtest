@@ -12,6 +12,7 @@ import {
   RotateCcw,
   ScanSearch,
   Upload,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -147,6 +148,16 @@ export default function ScanbodyWorkspace() {
   const [analysisNotice, setAnalysisNotice] = useState<string | null>(null);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [previewViewName, setPreviewViewName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!previewViewName) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreviewViewName(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [previewViewName]);
 
   useEffect(() => {
     const container = viewportRef.current;
@@ -588,6 +599,9 @@ export default function ScanbodyWorkspace() {
     () => new Map(analysis?.views.map((view) => [view.view, view.detections]) ?? []),
     [analysis],
   );
+  const previewView = capturedViews.find(
+    (view) => view.name === previewViewName,
+  );
 
   const detectionCount = analysis?.views.reduce(
     (total, view) => total + view.detections.length,
@@ -934,6 +948,7 @@ export default function ScanbodyWorkspace() {
                   key={view.name}
                   view={view}
                   detections={detectionsByView.get(view.name) ?? []}
+                  onOpen={() => setPreviewViewName(view.name)}
                 />
               ))
             )}
@@ -965,6 +980,41 @@ export default function ScanbodyWorkspace() {
           ) : null}
         </aside>
       </div>
+
+      {previewView ? (
+        <div
+          className={styles.previewBackdrop}
+          role="presentation"
+          onClick={() => setPreviewViewName(null)}
+        >
+          <section
+            className={styles.previewDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${previewView.label} camera view`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className={styles.previewHeader}>
+              <div>
+                <span className={styles.eyebrow}>Camera view</span>
+                <strong>{previewView.label}</strong>
+              </div>
+              <button
+                type="button"
+                aria-label="Close camera view"
+                title="Close"
+                onClick={() => setPreviewViewName(null)}
+              >
+                <X size={20} />
+              </button>
+            </header>
+            <LargeViewPreview
+              view={previewView}
+              detections={detectionsByView.get(previewView.name) ?? []}
+            />
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -985,12 +1035,19 @@ function PipelineRow({ done, label }: { done: boolean; label: string }) {
 function ViewThumbnail({
   view,
   detections,
+  onOpen,
 }: {
   view: CapturedView;
   detections: Detection[];
+  onOpen: () => void;
 }) {
   return (
-    <article className={styles.thumbnail}>
+    <button
+      className={styles.thumbnail}
+      type="button"
+      onClick={onOpen}
+      title={`Open ${view.label} camera view`}
+    >
       <div className={styles.thumbnailImage}>
         {/* The image is generated locally from the uploaded STL. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1029,7 +1086,52 @@ function ViewThumbnail({
         <span>{view.label}</span>
         <span>{detections.length ? `${detections.length} ROI` : "Clear"}</span>
       </footer>
-    </article>
+    </button>
+  );
+}
+
+function LargeViewPreview({
+  view,
+  detections,
+}: {
+  view: CapturedView;
+  detections: Detection[];
+}) {
+  return (
+    <div className={styles.previewCanvas}>
+      {/* Generated locally from the STL; opening this preview makes no API call. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={view.image} alt={`${view.label} STL render enlarged`} />
+      <svg
+        className={styles.outlineLayer}
+        viewBox={`0 0 ${CAPTURE_SIZE} ${CAPTURE_SIZE}`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        {detections.map((detection, index) => (
+          <polygon
+            key={`${view.name}-large-${index}`}
+            className={styles.detectionOutline}
+            points={detection.outline.map(([x, y]) => `${x},${y}`).join(" ")}
+          />
+        ))}
+      </svg>
+      {detections.map((detection, index) => {
+        const [firstX, firstY] = detection.outline[0] ?? [0, 0];
+        return (
+          <span
+            key={`${view.name}-large-${index}-confidence`}
+            className={`${styles.confidenceLabel} ${styles.previewConfidence}`}
+            style={{
+              left: `${(firstX / CAPTURE_SIZE) * 100}%`,
+              top: `${(Math.max(firstY, 55) / CAPTURE_SIZE) * 100}%`,
+            }}
+          >
+            {Math.round(detection.confidence * 100)}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 

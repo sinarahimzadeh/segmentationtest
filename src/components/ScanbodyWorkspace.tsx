@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TrackballControls } from "three/addons/controls/TrackballControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import styles from "./ScanbodyWorkspace.module.css";
 import { captureModelViews } from "@/lib/capture-views";
@@ -50,7 +50,7 @@ type ViewerState = {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
-  controls: OrbitControls;
+  controls: TrackballControls;
 };
 
 type ModelInfo = {
@@ -170,9 +170,15 @@ export default function ScanbodyWorkspace() {
     renderer.domElement.addEventListener("dragstart", preventNativeDrag);
     container.appendChild(renderer.domElement);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.07;
+    // TrackballControls does not lock the camera's up direction, so the model
+    // can be rotated continuously through every pole and rolled freely.
+    const controls = new TrackballControls(camera, renderer.domElement);
+    controls.rotateSpeed = 1.05;
+    controls.zoomSpeed = 1.2;
+    controls.panSpeed = 0.3;
+    controls.staticMoving = false;
+    controls.dynamicDampingFactor = 0.12;
+    controls.multiTouchRoll = true;
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x6b7376, 2.2));
     const keyLight = new THREE.DirectionalLight(0xffffff, 3.1);
@@ -188,6 +194,7 @@ export default function ScanbodyWorkspace() {
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      controls.handleResize();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(container);
@@ -253,6 +260,7 @@ export default function ScanbodyWorkspace() {
     if (!viewer || !meshRef.current) return;
     const distance = Math.max(sphere.radius * 2.8, 10);
     viewer.camera.position.set(distance * 0.78, distance * 0.62, distance);
+    viewer.camera.up.set(0, 1, 0);
     viewer.camera.near = Math.max(distance / 1000, 0.001);
     viewer.camera.far = distance * 20;
     viewer.camera.updateProjectionMatrix();

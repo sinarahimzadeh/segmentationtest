@@ -24,6 +24,24 @@
 /output/
 /debug-output/
 /benchmark-output/
+/screenshots/
+/captures/
+/artifacts/
+
+# Browser screenshots and traces generated during testing
+*.trace
+*.har
+
+# Local dental scans and generated 3D exports
+/uploads/
+/exports/
+*.stl
+*.ply
+*.obj
+*.glb
+*.gltf
+*.3mf
+*.off
 
 # Environment files and secrets
 .env
@@ -40,6 +58,9 @@ pnpm-debug.log*
 .eslintcache
 .stylelintcache
 /.turbo/
+*.tmp
+*.temp
+*.bak
 
 # TypeScript
 *.tsbuildinfo

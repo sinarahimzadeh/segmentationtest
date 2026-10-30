@@ -196,6 +196,29 @@
   cursor: not-allowed;
 }
 
+.folderStlPicker {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.folderStlPicker select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid #465359;
+  border-radius: 6px;
+  background: #111719;
+  color: #d8e0e2;
+  font: inherit;
+  font-size: 11px;
+}
+
+.folderStlPicker .secondaryButton {
+  margin-top: 0;
+}
+
 .modelDetails {
   margin-top: 12px;
   display: grid;

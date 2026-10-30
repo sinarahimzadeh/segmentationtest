@@ -19,6 +19,8 @@ export type SavedBenchmarkRun = {
   storageVersion: number;
   meshKey: string;
   meshName: string;
+  // Human-readable label taken from the STL's immediate parent folder.
+  meshFolderName?: string;
   kind: "baseline" | "comparison";
   model: AiModelId;
   reasoningEffort: ReasoningEffort;

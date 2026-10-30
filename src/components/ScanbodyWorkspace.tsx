@@ -57,8 +57,16 @@ type ViewerState = {
 type ModelInfo = {
   key: string;
   name: string;
+  folderName: string;
   triangles: number;
   dimensions: [number, number, number];
+};
+
+type FolderStlChoice = {
+  id: string;
+  file: File;
+  folderName: string;
+  relativePath: string;
 };
 
 const BASE_COLOR = new THREE.Color(0xcbd2d5);
@@ -74,6 +82,14 @@ async function createMeshKey(fileBytes: ArrayBuffer) {
 function formatEstimatedCost(cost: number | null) {
   if (cost === null) return "-";
   return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(3)}`;
+}
+
+function getParentFolderName(file: File) {
+  const parts = file.webkitRelativePath
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : "Selected folder";
 }
 
 function formatRunCost(
@@ -150,6 +166,8 @@ export default function ScanbodyWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [saveResultFiles, setSaveResultFiles] = useState(true);
   const [previewViewName, setPreviewViewName] = useState<string | null>(null);
+  const [folderStlChoices, setFolderStlChoices] = useState<FolderStlChoice[]>([]);
+  const [selectedFolderStlId, setSelectedFolderStlId] = useState("");
 
   useEffect(() => {
     if (!previewViewName) return;
@@ -281,7 +299,7 @@ export default function ScanbodyWorkspace() {
   }, []);
 
   const loadFile = useCallback(
-    async (file: File) => {
+    async (file: File, folderName: string) => {
       if (!file.name.toLowerCase().endsWith(".stl")) {
         setError("Choose an STL file for this first prototype.");
         return;
@@ -360,6 +378,7 @@ export default function ScanbodyWorkspace() {
         setModelInfo({
           key: meshKey,
           name: file.name,
+          folderName,
           triangles: Math.floor(positions.count / 3),
           dimensions: [size.x, size.y, size.z],
         });
@@ -505,6 +524,7 @@ export default function ScanbodyWorkspace() {
         storageVersion: BENCHMARK_STORAGE_VERSION,
         meshKey: modelInfo.key,
         meshName: modelInfo.name,
+        meshFolderName: modelInfo.folderName,
         kind: runKind,
         model: runModel,
         reasoningEffort: runEffort,
@@ -655,23 +675,91 @@ export default function ScanbodyWorkspace() {
               }`}
             >
               <Upload size={17} />
-              Choose STL
+              Choose STL folder
               <input
                 className={styles.fileInput}
                 type="file"
                 accept=".stl,model/stl"
+                multiple
+                ref={(input) => {
+                  // Browsers only reveal the parent folder name when the user
+                  // selects a folder. A normal file picker hides local paths.
+                  if (input) input.webkitdirectory = true;
+                }}
                 disabled={Boolean(busyLabel)}
                 onChange={(event) => {
-                  const file = event.currentTarget.files?.[0];
+                  const stlFiles = Array.from(event.currentTarget.files ?? [])
+                    .filter((file) => file.name.toLowerCase().endsWith(".stl"))
+                    .map((file, index) => ({
+                      id: `${file.webkitRelativePath}:${file.size}:${file.lastModified}:${index}`,
+                      file,
+                      folderName: getParentFolderName(file),
+                      relativePath: file.webkitRelativePath || file.name,
+                    }))
+                    .sort((left, right) =>
+                      left.relativePath.localeCompare(right.relativePath),
+                    );
                   event.currentTarget.value = "";
-                  if (file) void loadFile(file);
+                  if (stlFiles.length === 0) {
+                    setFolderStlChoices([]);
+                    setSelectedFolderStlId("");
+                    setError("That folder contains no STL files.");
+                    return;
+                  }
+                  if (stlFiles.length === 1) {
+                    setFolderStlChoices([]);
+                    setSelectedFolderStlId("");
+                    void loadFile(stlFiles[0].file, stlFiles[0].folderName);
+                    return;
+                  }
+                  setError(null);
+                  setAnalysisNotice(
+                    `Found ${stlFiles.length} STL files. Choose one below.`,
+                  );
+                  setFolderStlChoices(stlFiles);
+                  setSelectedFolderStlId(stlFiles[0].id);
                 }}
               />
             </label>
 
+            {folderStlChoices.length > 1 ? (
+              <div className={styles.folderStlPicker}>
+                <select
+                  aria-label="STL file in selected folder"
+                  value={selectedFolderStlId}
+                  onChange={(event) => setSelectedFolderStlId(event.target.value)}
+                  disabled={Boolean(busyLabel)}
+                >
+                  {folderStlChoices.map((choice) => (
+                    <option key={choice.id} value={choice.id}>
+                      {choice.relativePath}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className={styles.secondaryButton}
+                  type="button"
+                  disabled={Boolean(busyLabel)}
+                  onClick={() => {
+                    const choice = folderStlChoices.find(
+                      (candidate) => candidate.id === selectedFolderStlId,
+                    );
+                    if (!choice) return;
+                    setFolderStlChoices([]);
+                    setSelectedFolderStlId("");
+                    void loadFile(choice.file, choice.folderName);
+                  }}
+                >
+                  Load selected STL
+                </button>
+              </div>
+            ) : null}
+
             {modelInfo ? (
               <div className={styles.modelDetails}>
-                <strong title={modelInfo.name}>{modelInfo.name}</strong>
+                <strong title={modelInfo.folderName}>{modelInfo.folderName}</strong>
+                <span title={modelInfo.name}>{modelInfo.name}</span>
+                <span title={modelInfo.key}>ID: {modelInfo.key.slice(0, 12)}...</span>
                 <span>{modelInfo.triangles.toLocaleString()} triangles</span>
                 <span>
                   {modelInfo.dimensions.map((value) => value.toFixed(1)).join(" x ")}

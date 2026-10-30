@@ -47,6 +47,8 @@ const savedRunSchema = z.object({
   storageVersion: z.number().int().positive(),
   meshKey: meshKeySchema,
   meshName: z.string().min(1).max(500),
+  // Optional so benchmark files created before folder labels were added still load.
+  meshFolderName: z.string().min(1).max(500).optional(),
   kind: z.enum(["baseline", "comparison"]),
   model: z.enum(AI_MODEL_IDS),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high"]),

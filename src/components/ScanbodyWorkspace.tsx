@@ -532,6 +532,11 @@ export default function ScanbodyWorkspace() {
         analysis: result,
         selectedTriangleIds: [...triangleIds].sort((a, b) => a - b),
         objectCount: groupCount,
+        // Keep the baseline JSON unchanged. Comparison JSON gets this clearer
+        // field so the final number of separate 3D scanbodies is easy to find.
+        ...(runKind === "comparison"
+          ? { detectedScanbodyCount: groupCount }
+          : {}),
         metrics,
       };
 

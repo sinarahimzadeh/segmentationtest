@@ -56,6 +56,8 @@ const savedRunSchema = z.object({
   analysis: analysisSchema,
   selectedTriangleIds: z.array(z.number().int().nonnegative()),
   objectCount: z.number().int().nonnegative(),
+  // Optional keeps old comparisons and the unchanged baseline format compatible.
+  detectedScanbodyCount: z.number().int().nonnegative().optional(),
   metrics: metricsSchema.nullable(),
 });
 

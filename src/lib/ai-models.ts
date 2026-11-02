@@ -2,6 +2,7 @@ export const AI_MODEL_IDS = [
   "gpt-6.1-sol",
   "gpt-6.1-terra",
   "gpt-6-luna",
+  "gemini-4-argon",
   "gemini-3.8-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
@@ -50,6 +51,17 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 0.1,
     cachedInputPricePerMillionTokens: 0.01,
     outputPricePerMillionTokens: 0.5,
+  },
+  {
+    id: "gemini-4-argon",
+    provider: "google",
+    label: "Gemini 4 Argon",
+    comparisonEfforts: ["low", "medium", "high"],
+    // Google Standard paid prices through November 30, 2026. Argon is not
+    // available on Google's free tier, so every processed token is billable.
+    inputPricePerMillionTokens: 2,
+    cachedInputPricePerMillionTokens: 0.1,
+    outputPricePerMillionTokens: 10,
   },
   {
     id: "gemini-3.8-flash",

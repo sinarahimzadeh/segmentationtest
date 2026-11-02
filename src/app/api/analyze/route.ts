@@ -17,6 +17,18 @@ import {
   type ReasoningEffort,
 } from "@/lib/ai-models";
 
+/**
+ * @langchain/google-genai 2.3.4 predates Gemini 4 and its internal multimodal
+ * check only recognizes model names through `gemini-3`. Google officially
+ * supports image input for Gemini 4 Argon, so extend that check locally until
+ * LangChain adds Gemini 4 to its own model-name matcher.
+ */
+class CurrentGeminiChatModel extends ChatGoogleGenerativeAI {
+  override get _isMultimodalModel() {
+    return this.model.startsWith("gemini-4") || super._isMultimodalModel;
+  }
+}
+
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
   saveFiles: z.boolean().optional().default(true),
@@ -197,7 +209,7 @@ export async function POST(request: Request) {
             strict: true,
             includeRaw: true,
           })
-        : new ChatGoogleGenerativeAI({
+        : new CurrentGeminiChatModel({
             model: selection.model,
             apiKey: process.env.GOOGLE_API_KEY,
             maxRetries: 1,

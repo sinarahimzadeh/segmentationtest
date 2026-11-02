@@ -28,6 +28,8 @@ export type SavedBenchmarkRun = {
   analysis: AnalysisResult;
   selectedTriangleIds: number[];
   objectCount: number;
+  // Written with comparison runs as an explicit, human-readable result field.
+  detectedScanbodyCount?: number;
   metrics: ComparisonMetrics | null;
 };
 

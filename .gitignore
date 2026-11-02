@@ -24,6 +24,9 @@
 /output/
 /debug-output/
 /benchmark-output/
+# Generated local benchmark reports (keep README.md and real documentation tracked)
+/benchmark-*.md
+/*-report.md
 /screenshots/
 /captures/
 /artifacts/

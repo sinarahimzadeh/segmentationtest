@@ -919,9 +919,9 @@ export default function ScanbodyWorkspace() {
                 </div>
                 <div className={styles.metricGrid}>
                   <span><strong>{latestComparison.metrics.sameTrianglePercent.toFixed(1)}%</strong>Same triangles</span>
-                  <span><strong>{latestComparison.metrics.baselineFoundPercent.toFixed(1)}%</strong>Baseline found</span>
+                  <span><strong>{latestComparison.metrics.baselineFoundPercent.toFixed(1)}%</strong>Inlier</span>
                   <span><strong>{latestComparison.metrics.missedBaselinePercent.toFixed(1)}%</strong>Missed</span>
-                  <span><strong>{latestComparison.metrics.extraCandidatePercent.toFixed(1)}%</strong>Extra</span>
+                  <span><strong>{latestComparison.metrics.extraCandidatePercent.toFixed(1)}%</strong>Outlier</span>
                 </div>
                 <div className={styles.runCostLine}>
                   <span>{(latestComparison.analysis.meta.elapsedMs / 1000).toFixed(1)} seconds</span>
@@ -935,12 +935,14 @@ export default function ScanbodyWorkspace() {
               <div className={styles.runHistory}>
                 <span>Comparison table</span>
                 <div className={styles.runHistoryHeader}>
-                  <span>Model</span><span>Same</span><span>Time</span><span>Cost</span>
+                  <span>Model</span><span>Same</span><span>Inlier</span><span>Outlier</span><span>Time</span><span>Cost</span>
                 </div>
-                {comparisonRuns.slice(0, 8).map((run) => (
+                {comparisonRuns.map((run) => (
                   <button key={run.id} type="button" onClick={() => showSavedRun(run)}>
                     <span>{run.analysis.meta.modelLabel}</span>
                     <strong>{run.metrics?.sameTrianglePercent.toFixed(1) ?? "-"}%</strong>
+                    <strong>{run.metrics?.baselineFoundPercent.toFixed(1) ?? "-"}%</strong>
+                    <strong>{run.metrics?.extraCandidatePercent.toFixed(1) ?? "-"}%</strong>
                     <strong>{(run.analysis.meta.elapsedMs / 1000).toFixed(0)}s</strong>
                     <strong>{formatRunCost(run.analysis.meta, true)}</strong>
                   </button>

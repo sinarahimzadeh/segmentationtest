@@ -475,7 +475,7 @@
 .runHistoryHeader,
 .runHistory button {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px 32px 45px;
+  grid-template-columns: minmax(0, 1fr) 34px 38px 38px 30px 43px;
   align-items: center;
   gap: 5px;
 }

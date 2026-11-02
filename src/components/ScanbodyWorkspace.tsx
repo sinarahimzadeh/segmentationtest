@@ -94,14 +94,11 @@ function getParentFolderName(file: File) {
 
 function formatRunCost(
   meta: AnalysisResult["meta"],
-  compact = false,
 ) {
-  if (!meta.freeTierEligible) {
-    return formatEstimatedCost(meta.estimatedCostUsd);
-  }
-  return compact
-    ? "Free*"
-    : `Free tier · ${formatEstimatedCost(meta.estimatedCostUsd)} paid`;
+  // Billing is determined by the project connected to the API key, and model
+  // responses do not tell us whether a call was charged. Always show the paid
+  // estimate instead of incorrectly labeling an eligible Gemini model "Free".
+  return formatEstimatedCost(meta.estimatedCostUsd);
 }
 
 async function loadBenchmarkFiles(meshKey: string) {
@@ -819,7 +816,7 @@ export default function ScanbodyWorkspace() {
                   <span>{baselineRun.selectedTriangleIds.length.toLocaleString()} triangles</span>
                   <span>{baselineRun.objectCount} objects</span>
                   <span>{(baselineRun.analysis.meta.elapsedMs / 1000).toFixed(1)}s</span>
-                  <span>{formatRunCost(baselineRun.analysis.meta, true)}</span>
+                  <span>{formatRunCost(baselineRun.analysis.meta)}</span>
                 </div>
               </div>
             ) : (
@@ -882,12 +879,6 @@ export default function ScanbodyWorkspace() {
                 </select>
               </label>
             </div>
-            {comparisonModelOption.freeTierEligible ? (
-              <p className={styles.freeTierHint}>
-                Free-tier call: $0 until Google&apos;s quota. The paid-price
-                equivalent is still saved for later comparison.
-              </p>
-            ) : null}
             <button
               className={styles.comparisonButton}
               type="button"
@@ -944,7 +935,7 @@ export default function ScanbodyWorkspace() {
                     <strong>{run.metrics?.baselineFoundPercent.toFixed(1) ?? "-"}%</strong>
                     <strong>{run.metrics?.extraCandidatePercent.toFixed(1) ?? "-"}%</strong>
                     <strong>{(run.analysis.meta.elapsedMs / 1000).toFixed(0)}s</strong>
-                    <strong>{formatRunCost(run.analysis.meta, true)}</strong>
+                    <strong>{formatRunCost(run.analysis.meta)}</strong>
                   </button>
                 ))}
               </div>
@@ -1099,7 +1090,7 @@ export default function ScanbodyWorkspace() {
               </div>
               <div>
                 <span>Est. cost</span>
-                <strong>{formatRunCost(analysis.meta, true)}</strong>
+                <strong>{formatRunCost(analysis.meta)}</strong>
               </div>
               <div>
                 <span>Model time</span>

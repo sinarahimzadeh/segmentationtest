@@ -19,7 +19,6 @@ export type AiModelOption = {
   inputPricePerMillionTokens: number;
   cachedInputPricePerMillionTokens: number;
   outputPricePerMillionTokens: number;
-  freeTierEligible: boolean;
 };
 
 /** One shared whitelist drives the dropdown, API validation, and cost estimate. */
@@ -33,7 +32,6 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 2,
     cachedInputPricePerMillionTokens: 0.2,
     outputPricePerMillionTokens: 10,
-    freeTierEligible: false,
   },
   {
     id: "gpt-6.1-terra",
@@ -43,7 +41,6 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 1,
     cachedInputPricePerMillionTokens: 0.1,
     outputPricePerMillionTokens: 5,
-    freeTierEligible: false,
   },
   {
     id: "gpt-6-luna",
@@ -53,31 +50,26 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 0.1,
     cachedInputPricePerMillionTokens: 0.01,
     outputPricePerMillionTokens: 0.5,
-    freeTierEligible: false,
   },
   {
     id: "gemini-3.8-flash",
     provider: "google",
     label: "Gemini 3.8 Flash",
     comparisonEfforts: ["low", "medium", "high"],
-    // Current Standard paid prices through 31 December 2026. Free-tier calls
-    // can cost $0; we retain this paid equivalent for later cost comparisons.
+    // Standard paid prices used for benchmark cost comparisons.
     inputPricePerMillionTokens: 0.75,
     cachedInputPricePerMillionTokens: 0.075,
     outputPricePerMillionTokens: 3.75,
-    freeTierEligible: true,
   },
   {
     id: "gemini-3.5-flash-lite",
     provider: "google",
     label: "Gemini 3.5 Flash-Lite",
     comparisonEfforts: ["minimal", "low", "medium", "high"],
-    // Current Google Standard paid prices. Free-tier calls can cost $0;
-    // retain the paid equivalent so benchmark costs remain comparable.
+    // Standard paid prices used for benchmark cost comparisons.
     inputPricePerMillionTokens: 0.3,
     cachedInputPricePerMillionTokens: 0.03,
     outputPricePerMillionTokens: 2.5,
-    freeTierEligible: true,
   },
   {
     id: "gemini-3.1-flash-lite",
@@ -87,7 +79,6 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 0.25,
     cachedInputPricePerMillionTokens: 0.025,
     outputPricePerMillionTokens: 1.5,
-    freeTierEligible: true,
   },
 ];
 

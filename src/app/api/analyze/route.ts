@@ -172,7 +172,6 @@ export async function POST(request: Request) {
     const outlinePointCount = getOutlinePointCount();
     const detectionSchema = createDetectionSchema(outlinePointCount);
     const selection = resolveModelSelection(body.run);
-    const modelOption = getAiModelOption(selection.model);
 
     if (selection.provider === "openai" && !process.env.OPENAI_API_KEY) {
       throw new Error(
@@ -310,7 +309,10 @@ export async function POST(request: Request) {
           cachedInputTokens,
           outputTokens,
         }),
-        freeTierEligible: modelOption.freeTierEligible,
+        // The API response does not report whether Google actually billed the
+        // request. Never guess "free" from model eligibility; benchmarks always
+        // show the calculated paid cost. Keep this field only for old JSON files.
+        freeTierEligible: false,
       },
     });
   } catch (error) {

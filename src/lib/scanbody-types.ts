@@ -26,9 +26,10 @@ export type AnalysisResult = {
     inputTokens: number | null;
     cachedInputTokens: number | null;
     outputTokens: number | null;
-    // For Gemini free-tier calls the actual charge can be $0. This value is
-    // the current paid Standard equivalent so models remain comparable.
+    // Calculated from token usage using the configured paid API prices.
     estimatedCostUsd: number | null;
+    // Legacy compatibility for older benchmark JSON. New runs always set false,
+    // and the UI always displays estimatedCostUsd instead of guessing billing.
     freeTierEligible: boolean;
   };
 };

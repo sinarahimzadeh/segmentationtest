@@ -21,6 +21,8 @@ export type AnalysisResult = {
     model: string;
     modelLabel: string;
     provider: AiProvider;
+    // Present only on new Claude runs so direct and LangChain results are distinct.
+    integration?: "langchain" | "anthropic-sdk";
     reasoningEffort: ReasoningEffort;
     elapsedMs: number;
     inputTokens: number | null;

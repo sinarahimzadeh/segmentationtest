@@ -1,10 +1,12 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { analyzeClaudeDirect } from "@/lib/direct-claude";
 import {
   AI_MODEL_IDS,
   BASELINE_SELECTION,
@@ -29,9 +31,14 @@ class CurrentGeminiChatModel extends ChatGoogleGenerativeAI {
   }
 }
 
+type ClaudeModelId = Extract<AiModelId, `claude-${string}`>;
+type ClaudeEffort = Exclude<ReasoningEffort, "minimal">;
+
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
   saveFiles: z.boolean().optional().default(true),
+  // Only Claude comparisons may opt out of LangChain. Default preserves old runs.
+  directClaude: z.boolean().optional().default(false),
   run: z.discriminatedUnion("type", [
     z.object({ type: z.literal("baseline") }),
     z.object({
@@ -184,6 +191,7 @@ export async function POST(request: Request) {
     const outlinePointCount = getOutlinePointCount();
     const detectionSchema = createDetectionSchema(outlinePointCount);
     const selection = resolveModelSelection(body.run);
+    const directClaude = body.directClaude && selection.provider === "anthropic";
 
     if (selection.provider === "openai" && !process.env.OPENAI_API_KEY) {
       throw new Error(
@@ -195,9 +203,15 @@ export async function POST(request: Request) {
         "GOOGLE_API_KEY is missing. Add it to .env.local and restart the server.",
       );
     }
+    if (selection.provider === "anthropic" && !process.env.ANTHROPIC_API_KEY) {
+      throw new Error(
+        "ANTHROPIC_API_KEY is missing. Add it to .env.local and restart the server.",
+      );
+    }
 
-    const detector =
-      selection.provider === "openai"
+    const detector = directClaude
+      ? null
+      : selection.provider === "openai"
         ? new ChatOpenAI({
             model: selection.model,
             apiKey: process.env.OPENAI_API_KEY,
@@ -209,44 +223,102 @@ export async function POST(request: Request) {
             strict: true,
             includeRaw: true,
           })
-        : new CurrentGeminiChatModel({
-            model: selection.model,
-            apiKey: process.env.GOOGLE_API_KEY,
-            maxRetries: 1,
-            maxOutputTokens: 65_536,
-            thinkingConfig: {
-              // The installed LangChain type has not yet added MINIMAL, but the
-              // current Gemini API supports it for Flash-Lite.
-              thinkingLevel: selection.reasoningEffort.toUpperCase() as
-                | "LOW"
-                | "MEDIUM"
-                | "HIGH",
-            },
-          }).withStructuredOutput(detectionSchema, {
-            name: "scanbody_roi_detection",
-            includeRaw: true,
-          });
+        : selection.provider === "google"
+          ? new CurrentGeminiChatModel({
+              model: selection.model,
+              apiKey: process.env.GOOGLE_API_KEY,
+              maxRetries: 1,
+              maxOutputTokens: 65_536,
+              thinkingConfig: {
+                // The installed LangChain type has not yet added MINIMAL, but the
+                // current Gemini API supports it for Flash-Lite.
+                thinkingLevel: selection.reasoningEffort.toUpperCase() as
+                  | "LOW"
+                  | "MEDIUM"
+                  | "HIGH",
+              },
+            }).withStructuredOutput(detectionSchema, {
+              name: "scanbody_roi_detection",
+              includeRaw: true,
+            })
+          : new ChatAnthropic({
+              // Provider validation above guarantees this branch only receives
+              // a selectable Claude ID from the shared model whitelist.
+              model: selection.model as ClaudeModelId,
+              apiKey: process.env.ANTHROPIC_API_KEY,
+              maxRetries: 1,
+              // Fable 5.1 and the selectable Claude 5.5 models support 128K output.
+              // This is only a ceiling; Anthropic bills tokens actually used.
+              maxTokens: 128_000,
+              // Anthropic's SDK rejects large non-streaming requests before
+              // sending them. LangChain collects this internal stream and the
+              // route still returns one normal final JSON response to the UI.
+              streaming: true,
+              // Fable 5.1 and the Claude 5.5 family use adaptive thinking and
+              // the native effort parameter for Low, Medium, and High.
+              thinking: { type: "adaptive" },
+              outputConfig: {
+                effort: selection.reasoningEffort as ClaudeEffort,
+              },
+            }).withStructuredOutput(detectionSchema, {
+              name: "scanbody_roi_detection",
+              // Anthropic's native JSON-schema output avoids extra tool-call
+              // wrapper tokens and returns the same parsed shape as other providers.
+              method: "jsonSchema",
+              includeRaw: true,
+            });
 
-    const content: HumanMessage["content"] = [
-      {
-        type: "text",
-        text: `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing exactly ${outlinePointCount} ordered whole-number pixel pairs in "x,y x,y" format.`,
-      },
-    ];
-
-    for (const view of body.views) {
-      content.push({ type: "text", text: `VIEW_ID: ${view.name}` });
-      content.push({
-        type: "image_url",
-        image_url: { url: view.image, detail: "high" },
-      });
-    }
-
+    const imageInstruction = `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing exactly ${outlinePointCount} ordered whole-number pixel pairs in "x,y x,y" format.`;
+    const systemPrompt = createSystemPrompt(outlinePointCount);
     const startedAt = performance.now();
-    const result = await detector.invoke([
-      new SystemMessage(createSystemPrompt(outlinePointCount)),
-      new HumanMessage({ content }),
-    ]);
+    let parsed: z.infer<typeof detectionSchema>;
+    let inputTokens: number | null;
+    let cachedInputTokens: number | null;
+    let outputTokens: number | null;
+    if (directClaude) {
+      // Direct SDK branch: no LangChain call, with the same prompt and 8 images.
+      const result = await analyzeClaudeDirect({
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: selection.model as ClaudeModelId,
+        effort: selection.reasoningEffort as ClaudeEffort,
+        systemPrompt,
+        imageInstruction,
+        views: body.views,
+        detectionSchema,
+      });
+      parsed = result.parsed;
+      inputTokens = result.inputTokens;
+      cachedInputTokens = result.cachedInputTokens;
+      outputTokens = result.outputTokens;
+    } else {
+      const content: HumanMessage["content"] = [
+        { type: "text", text: imageInstruction },
+      ];
+      for (const view of body.views) {
+        content.push({ type: "text", text: `VIEW_ID: ${view.name}` });
+        content.push({
+          type: "image_url",
+          image_url: { url: view.image, detail: "high" },
+        });
+      }
+      const result = await detector!.invoke([
+        new SystemMessage(systemPrompt),
+        new HumanMessage({ content }),
+      ]);
+      parsed = result.parsed;
+      const usage = (
+        result.raw as {
+          usage_metadata?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            input_token_details?: { cache_read?: number };
+          };
+        }
+      ).usage_metadata;
+      inputTokens = usage?.input_tokens ?? null;
+      cachedInputTokens = usage?.input_token_details?.cache_read ?? null;
+      outputTokens = usage?.output_tokens ?? null;
+    }
     const elapsedMs = Math.round(performance.now() - startedAt);
 
     // TEMPORARY DEBUG SAVE — REMOVE LATER:
@@ -259,7 +331,7 @@ export async function POST(request: Request) {
       await mkdir(debugOutputDirectory, { recursive: true });
       await writeFile(
         join(debugOutputDirectory, "latest-llm-response.json"),
-        JSON.stringify(result.parsed, null, 2),
+        JSON.stringify(parsed, null, 2),
         "utf8",
       );
     }
@@ -268,7 +340,7 @@ export async function POST(request: Request) {
     const clampCoordinate = (coordinate: number) =>
       Math.max(0, Math.min(body.imageSize, coordinate));
 
-    const views = result.parsed.views
+    const views = parsed.views
       .filter((view) => validViewNames.has(view.view))
       .map((view) => ({
         view: view.view,
@@ -288,27 +360,15 @@ export async function POST(request: Request) {
         }),
       }));
 
-    const usage = (
-      result.raw as {
-        usage_metadata?: {
-          input_tokens?: number;
-          output_tokens?: number;
-          input_token_details?: { cache_read?: number };
-        };
-      }
-    ).usage_metadata;
-    const inputTokens = usage?.input_tokens ?? null;
-    const cachedInputTokens = usage?.input_token_details?.cache_read ?? null;
-    const outputTokens = usage?.output_tokens ?? null;
     return NextResponse.json({
       views,
       meta: {
         model: selection.model,
-        modelLabel: getModelRunLabel(
-          selection.model,
-          selection.reasoningEffort,
-        ),
+        modelLabel: `${getModelRunLabel(selection.model, selection.reasoningEffort)}${directClaude ? " · Direct API" : ""}`,
         provider: selection.provider,
+        ...(selection.provider === "anthropic"
+          ? { integration: directClaude ? "anthropic-sdk" : "langchain" }
+          : {}),
         reasoningEffort: selection.reasoningEffort,
         outlinePointsPerScanbody: outlinePointCount,
         elapsedMs,
@@ -321,9 +381,9 @@ export async function POST(request: Request) {
           cachedInputTokens,
           outputTokens,
         }),
-        // The API response does not report whether Google actually billed the
-        // request. Never guess "free" from model eligibility; benchmarks always
-        // show the calculated paid cost. Keep this field only for old JSON files.
+        // Provider responses do not reliably say whether a request was billed.
+        // Benchmarks always show the calculated paid cost. Keep this legacy
+        // field only so old saved JSON files remain compatible.
         freeTierEligible: false,
       },
     });

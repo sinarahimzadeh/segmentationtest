@@ -162,6 +162,7 @@ export default function ScanbodyWorkspace() {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveResultFiles, setSaveResultFiles] = useState(true);
+  const [directClaude, setDirectClaude] = useState(false);
   const [previewViewName, setPreviewViewName] = useState<string | null>(null);
   const [folderStlChoices, setFolderStlChoices] = useState<FolderStlChoice[]>([]);
   const [selectedFolderStlId, setSelectedFolderStlId] = useState("");
@@ -464,6 +465,11 @@ export default function ScanbodyWorkspace() {
           // This controls both benchmark files and the temporary raw-response
           // JSON. Detection and in-memory comparison still work when it is off.
           saveFiles: saveResultFiles,
+          // The toggle changes only Claude comparisons; the baseline stays Sol.
+          directClaude:
+            runKind === "comparison" &&
+            getAiModelOption(comparisonModel).provider === "anthropic" &&
+            directClaude,
           run:
             runKind === "baseline"
               ? { type: "baseline" }
@@ -588,6 +594,7 @@ export default function ScanbodyWorkspace() {
     capturedViews,
     comparisonEffort,
     comparisonModel,
+    directClaude,
     mapAnalysisToTriangles,
     modelInfo,
     saveResultFiles,
@@ -842,7 +849,9 @@ export default function ScanbodyWorkspace() {
                 >
                   <optgroup label="OpenAI">
                     {AI_MODEL_OPTIONS.filter(
-                      (option) => option.provider === "openai",
+                      (option) =>
+                        option.provider === "openai" &&
+                        option.comparisonEfforts.length > 0,
                     ).map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
@@ -851,7 +860,20 @@ export default function ScanbodyWorkspace() {
                   </optgroup>
                   <optgroup label="Google Gemini">
                     {AI_MODEL_OPTIONS.filter(
-                      (option) => option.provider === "google",
+                      (option) =>
+                        option.provider === "google" &&
+                        option.comparisonEfforts.length > 0,
+                    ).map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Anthropic Claude">
+                    {AI_MODEL_OPTIONS.filter(
+                      (option) =>
+                        option.provider === "anthropic" &&
+                        option.comparisonEfforts.length > 0,
                     ).map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
@@ -879,6 +901,23 @@ export default function ScanbodyWorkspace() {
                 </select>
               </label>
             </div>
+            {comparisonModelOption.provider === "anthropic" ? (
+              <label className={styles.saveToggle}>
+                <span>
+                  <strong>Direct Claude API</strong>
+                  <small>On: Anthropic SDK · Off: LangChain</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={directClaude}
+                  disabled={Boolean(busyLabel)}
+                  onChange={(event) => setDirectClaude(event.currentTarget.checked)}
+                />
+                <span className={styles.toggleTrack} aria-hidden="true">
+                  <span />
+                </span>
+              </label>
+            ) : null}
             <button
               className={styles.comparisonButton}
               type="button"

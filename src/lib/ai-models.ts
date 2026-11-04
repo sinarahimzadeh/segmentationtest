@@ -4,12 +4,23 @@ export const AI_MODEL_IDS = [
   "gpt-6-luna",
   "gemini-4-argon",
   "gemini-3.8-flash",
+  "gemini-3.1-pro-preview",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "claude-fable-5-1",
   "claude-opus-5-5",
   "claude-sonnet-5-5",
   "claude-haiku-5-5",
+  "mistral-large-4",
+  "mistral-medium-3-5",
+  "mistral-large-2512",
+  "openrouter-mistral-large",
+  "openrouter-mistral-small",
+  "openrouter-ministral-8b",
+  "openrouter-qwen-3-7-flash",
+  "openrouter-qwen-3-8-flash",
+  "openrouter-qwen-3-vl-30b",
+  "openrouter-deepseek-v4-flash",
   // Keep the old IDs so benchmark JSON created before the 5.5 upgrade loads.
   "claude-opus-5",
   "claude-sonnet-5",
@@ -17,8 +28,8 @@ export const AI_MODEL_IDS = [
 ] as const;
 
 export type AiModelId = (typeof AI_MODEL_IDS)[number];
-export type AiProvider = "openai" | "google" | "anthropic";
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+export type AiProvider = "openai" | "google" | "anthropic" | "mistral" | "openrouter";
+export type ReasoningEffort = "default" | "none" | "minimal" | "low" | "medium" | "high";
 
 export type AiModelOption = {
   id: AiModelId;
@@ -28,6 +39,7 @@ export type AiModelOption = {
   inputPricePerMillionTokens: number;
   cachedInputPricePerMillionTokens: number;
   outputPricePerMillionTokens: number;
+  apiModelName?: string;
 };
 
 /** One shared whitelist drives the dropdown, API validation, and cost estimate. */
@@ -36,8 +48,8 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     id: "gpt-6.1-sol",
     provider: "openai",
     label: "GPT-6.1 Sol",
-    // Sol Medium is the fixed baseline, so only Low is a comparison choice.
-    comparisonEfforts: ["low"],
+    // Sol Medium is the fixed baseline; High can be compared with it.
+    comparisonEfforts: ["low", "high"],
     inputPricePerMillionTokens: 2,
     cachedInputPricePerMillionTokens: 0.2,
     outputPricePerMillionTokens: 10,
@@ -46,7 +58,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     id: "gpt-6.1-terra",
     provider: "openai",
     label: "GPT-6.1 Terra",
-    comparisonEfforts: ["low", "medium"],
+    comparisonEfforts: ["low", "medium", "high"],
     inputPricePerMillionTokens: 1,
     cachedInputPricePerMillionTokens: 0.1,
     outputPricePerMillionTokens: 5,
@@ -80,6 +92,16 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 0.75,
     cachedInputPricePerMillionTokens: 0.075,
     outputPricePerMillionTokens: 3.75,
+  },
+  {
+    id: "gemini-3.1-pro-preview",
+    provider: "google",
+    label: "Gemini 3.1 Pro Preview",
+    comparisonEfforts: ["low", "medium", "high"],
+    // Standard paid prices for prompts under 200K tokens.
+    inputPricePerMillionTokens: 2,
+    cachedInputPricePerMillionTokens: 0.2,
+    outputPricePerMillionTokens: 12,
   },
   {
     id: "gemini-3.5-flash-lite",
@@ -137,6 +159,103 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     // This benchmark is far below Haiku's 100K-input long-context threshold.
     inputPricePerMillionTokens: 0.1,
     cachedInputPricePerMillionTokens: 0.01,
+    outputPricePerMillionTokens: 0.5,
+  },
+  {
+    id: "mistral-large-4",
+    provider: "mistral",
+    label: "Mistral Large 4 (deprecated direct)",
+    comparisonEfforts: [],
+    inputPricePerMillionTokens: 0.7,
+    cachedInputPricePerMillionTokens: 0.07,
+    outputPricePerMillionTokens: 2.1,
+  },
+  {
+    id: "mistral-medium-3-5",
+    provider: "mistral",
+    label: "Mistral Medium 3.5 (deprecated direct)",
+    comparisonEfforts: [],
+    inputPricePerMillionTokens: 1.5,
+    cachedInputPricePerMillionTokens: 0.15,
+    outputPricePerMillionTokens: 7.5,
+  },
+  {
+    id: "mistral-large-2512",
+    provider: "mistral",
+    label: "Mistral Large 3 (deprecated direct)",
+    comparisonEfforts: [],
+    inputPricePerMillionTokens: 0.5,
+    cachedInputPricePerMillionTokens: 0.05,
+    outputPricePerMillionTokens: 1.5,
+  },
+  {
+    id: "openrouter-mistral-large",
+    provider: "openrouter",
+    label: "Mistral Large 4 (OpenRouter)",
+    apiModelName: "mistralai/mistral-large-4-0",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 0.7,
+    cachedInputPricePerMillionTokens: 0.07,
+    outputPricePerMillionTokens: 2.1,
+  },
+  {
+    id: "openrouter-mistral-small",
+    provider: "openrouter",
+    label: "Mistral Small (OpenRouter)",
+    apiModelName: "mistralai/mistral-small-2603",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 0.15,
+    cachedInputPricePerMillionTokens: 0.015,
+    outputPricePerMillionTokens: 0.6,
+  },
+  {
+    id: "openrouter-ministral-8b",
+    provider: "openrouter",
+    label: "Ministral 8B (OpenRouter)",
+    apiModelName: "mistralai/ministral-8b-2512",
+    comparisonEfforts: ["default"],
+    inputPricePerMillionTokens: 0.15,
+    cachedInputPricePerMillionTokens: 0.015,
+    outputPricePerMillionTokens: 0.15,
+  },
+  {
+    id: "openrouter-qwen-3-7-flash",
+    provider: "openrouter",
+    label: "Qwen 3.7 Flash (OpenRouter)",
+    apiModelName: "qwen/qwen3.7-flash",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 0.03,
+    cachedInputPricePerMillionTokens: 0.003,
+    outputPricePerMillionTokens: 0.13,
+  },
+  {
+    id: "openrouter-qwen-3-8-flash",
+    provider: "openrouter",
+    label: "Qwen 3.8 Flash (OpenRouter)",
+    apiModelName: "qwen/qwen3.8-flash",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 0.15,
+    cachedInputPricePerMillionTokens: 0.015,
+    outputPricePerMillionTokens: 0.47,
+  },
+  {
+    id: "openrouter-qwen-3-vl-30b",
+    provider: "openrouter",
+    label: "Qwen 3 VL 30B (OpenRouter)",
+    apiModelName: "qwen/qwen3-vl-30b-a3b-instruct",
+    comparisonEfforts: ["default"],
+    inputPricePerMillionTokens: 0.15,
+    cachedInputPricePerMillionTokens: 0.015,
+    outputPricePerMillionTokens: 0.6,
+  },
+  {
+    id: "openrouter-deepseek-v4-flash",
+    provider: "openrouter",
+    label: "DeepSeek V4.1 Flash (OpenRouter)",
+    apiModelName: "deepseek/deepseek-v4.1-flash",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 0.045,
+    cachedInputPricePerMillionTokens: 0.005,
     outputPricePerMillionTokens: 0.5,
   },
   {

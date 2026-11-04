@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { analyzeClaudeDirect } from "@/lib/direct-claude";
+import { MistralChatModel } from "@/lib/mistral-chat";
 import {
   AI_MODEL_IDS,
   BASELINE_SELECTION,
@@ -32,7 +33,8 @@ class CurrentGeminiChatModel extends ChatGoogleGenerativeAI {
 }
 
 type ClaudeModelId = Extract<AiModelId, `claude-${string}`>;
-type ClaudeEffort = Exclude<ReasoningEffort, "minimal">;
+type ClaudeEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+type MistralEffort = Extract<ReasoningEffort, "none" | "low" | "medium" | "high">;
 
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
@@ -44,7 +46,7 @@ const requestSchema = z.object({
     z.object({
       type: z.literal("comparison"),
       model: z.enum(AI_MODEL_IDS),
-      reasoningEffort: z.enum(["minimal", "low", "medium", "high"]),
+      reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
     }),
   ]),
   views: z
@@ -208,6 +210,16 @@ export async function POST(request: Request) {
         "ANTHROPIC_API_KEY is missing. Add it to .env.local and restart the server.",
       );
     }
+    if (selection.provider === "mistral" && !process.env.MISTRAL_API_KEY) {
+      throw new Error(
+        "MISTRAL_API_KEY is missing. Add it to .env.local and restart the server.",
+      );
+    }
+    if (selection.provider === "openrouter" && !process.env.OPENROUTER_API_KEY) {
+      throw new Error(
+        "OPENROUTER_API_KEY is missing. Add it to .env.local and restart the server.",
+      );
+    }
 
     const detector = directClaude
       ? null
@@ -217,7 +229,7 @@ export async function POST(request: Request) {
             apiKey: process.env.OPENAI_API_KEY,
             maxRetries: 1,
             useResponsesApi: true,
-            reasoning: { effort: selection.reasoningEffort },
+            reasoning: { effort: selection.reasoningEffort as "low" | "medium" },
           }).withStructuredOutput(detectionSchema, {
             name: "scanbody_roi_detection",
             strict: true,
@@ -241,7 +253,40 @@ export async function POST(request: Request) {
               name: "scanbody_roi_detection",
               includeRaw: true,
             })
-          : new ChatAnthropic({
+          : selection.provider === "mistral"
+            ? new MistralChatModel({
+                model: selection.model,
+                apiKey: process.env.MISTRAL_API_KEY,
+                maxRetries: 1,
+                // Large 3 uses its default behavior, so omit reasoning_effort.
+                reasoningEffort:
+                  selection.reasoningEffort === "default"
+                    ? undefined
+                    : (selection.reasoningEffort as MistralEffort),
+              }).withStructuredOutput(detectionSchema, {
+                name: "scanbody_roi_detection",
+                includeRaw: true,
+              })
+            : selection.provider === "openrouter"
+              ? new ChatOpenAI({
+                  model:
+                    getAiModelOption(selection.model).apiModelName ??
+                    selection.model,
+                  apiKey: process.env.OPENROUTER_API_KEY,
+                  maxRetries: 1,
+                  configuration: {
+                    baseURL: "https://openrouter.ai/api/v1",
+                  },
+                  modelKwargs: {
+                    ...(selection.reasoningEffort !== "default"
+                      ? { reasoning: { effort: selection.reasoningEffort } }
+                      : {}),
+                  },
+                }).withStructuredOutput(detectionSchema, {
+                  name: "scanbody_roi_detection",
+                  includeRaw: true,
+                })
+              : new ChatAnthropic({
               // Provider validation above guarantees this branch only receives
               // a selectable Claude ID from the shared model whitelist.
               model: selection.model as ClaudeModelId,

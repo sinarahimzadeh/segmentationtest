@@ -465,6 +465,44 @@
   text-transform: uppercase;
 }
 
+.runHistorySearch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid #3b484d;
+  border-radius: 5px;
+  background: #111719;
+  color: #8d9a9f;
+}
+
+.runHistorySearch:focus-within {
+  border-color: #69cbbf;
+}
+
+.runHistorySearch input {
+  width: 100%;
+  min-width: 0;
+  height: 31px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #d8e0e2;
+  font: inherit;
+  font-size: 10px;
+}
+
+.runHistorySearch input::placeholder {
+  color: #78868b;
+}
+
+.runHistoryEmpty {
+  margin: 5px 0;
+  color: #8d9a9f;
+  font-size: 10px;
+}
+
 .runHistoryHeader,
 .runHistory button {
   display: grid;
@@ -493,9 +531,11 @@
 }
 
 .runHistory button span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: left;
 }
 
 .runHistory button strong {

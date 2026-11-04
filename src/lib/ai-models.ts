@@ -67,7 +67,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     id: "gpt-6-luna",
     provider: "openai",
     label: "GPT-6 Luna",
-    comparisonEfforts: ["low", "medium"],
+    comparisonEfforts: ["low", "medium", "high"],
     inputPricePerMillionTokens: 0.1,
     cachedInputPricePerMillionTokens: 0.01,
     outputPricePerMillionTokens: 0.5,

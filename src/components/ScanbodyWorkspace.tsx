@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   RotateCcw,
   ScanSearch,
+  Search,
   Upload,
   X,
 } from "lucide-react";
@@ -154,6 +155,7 @@ export default function ScanbodyWorkspace() {
   const [selectedObjectCount, setSelectedObjectCount] = useState(0);
   const [baselineRun, setBaselineRun] = useState<SavedBenchmarkRun | null>(null);
   const [comparisonRuns, setComparisonRuns] = useState<SavedBenchmarkRun[]>([]);
+  const [comparisonSearch, setComparisonSearch] = useState("");
   const [comparisonModel, setComparisonModel] =
     useState<AiModelId>("gpt-6.1-sol");
   const [comparisonEffort, setComparisonEffort] =
@@ -314,6 +316,7 @@ export default function ScanbodyWorkspace() {
       setSelectedObjectCount(0);
       setBaselineRun(null);
       setComparisonRuns([]);
+      setComparisonSearch("");
       triangleIdMapsRef.current.clear();
       originalPositionsRef.current = null;
 
@@ -657,6 +660,15 @@ export default function ScanbodyWorkspace() {
   );
   const comparisonModelOption = getAiModelOption(comparisonModel);
   const latestComparison = comparisonRuns[0] ?? null;
+  // Ignore separators such as the middle dot, so "terra high" finds
+  // "GPT-6.1 Terra · High" without requiring the user to type that symbol.
+  const searchTerms = comparisonSearch.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const visibleComparisonRuns = comparisonRuns.filter((run) => {
+    const modelText = run.analysis.meta.modelLabel
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ");
+    return searchTerms.every((term) => modelText.includes(term));
+  });
 
   return (
     <main className={styles.appShell}>
@@ -975,12 +987,22 @@ export default function ScanbodyWorkspace() {
             {comparisonRuns.length > 0 ? (
               <div className={styles.runHistory}>
                 <span>Comparison table</span>
+                <label className={styles.runHistorySearch}>
+                  <Search size={14} aria-hidden="true" />
+                  <input
+                    type="search"
+                    aria-label="Search comparison models"
+                    placeholder="Search model name"
+                    value={comparisonSearch}
+                    onChange={(event) => setComparisonSearch(event.target.value)}
+                  />
+                </label>
                 <div className={styles.runHistoryHeader}>
                   <span>Model</span><span>Same</span><span>Inlier</span><span>Outlier</span><span>Time</span><span>Cost</span>
                 </div>
-                {comparisonRuns.map((run) => (
+                {visibleComparisonRuns.map((run) => (
                   <button key={run.id} type="button" onClick={() => showSavedRun(run)}>
-                    <span>{run.analysis.meta.modelLabel}</span>
+                    <span title={run.analysis.meta.modelLabel}>{run.analysis.meta.modelLabel}</span>
                     <strong>{run.metrics?.sameTrianglePercent.toFixed(1) ?? "-"}%</strong>
                     <strong>{run.metrics?.baselineFoundPercent.toFixed(1) ?? "-"}%</strong>
                     <strong>{run.metrics?.extraCandidatePercent.toFixed(1) ?? "-"}%</strong>
@@ -988,6 +1010,9 @@ export default function ScanbodyWorkspace() {
                     <strong>{formatRunCost(run.analysis.meta)}</strong>
                   </button>
                 ))}
+                {visibleComparisonRuns.length === 0 ? (
+                  <p className={styles.runHistoryEmpty}>No matching models.</p>
+                ) : null}
               </div>
             ) : null}
 

@@ -1008,22 +1008,24 @@ export default function ScanbodyWorkspace() {
                     onChange={(event) => setComparisonSearch(event.target.value)}
                   />
                 </label>
-                <div className={styles.runHistoryHeader}>
-                  <span>Model</span><span>Same</span><span>Inlier</span><span>Outlier</span><span>Time</span><span>Cost</span>
+                <div className={styles.runHistoryList}>
+                  <div className={styles.runHistoryHeader}>
+                    <span>Model</span><span>Same</span><span>Inlier</span><span>Outlier</span><span>Time</span><span>Cost</span>
+                  </div>
+                  {visibleComparisonRuns.map((run) => (
+                    <button key={run.id} type="button" onClick={() => showSavedRun(run)}>
+                      <span title={run.analysis.meta.modelLabel}>{run.analysis.meta.modelLabel}</span>
+                      <strong>{run.metrics?.sameTrianglePercent.toFixed(1) ?? "-"}%</strong>
+                      <strong>{run.metrics?.baselineFoundPercent.toFixed(1) ?? "-"}%</strong>
+                      <strong>{run.metrics?.extraCandidatePercent.toFixed(1) ?? "-"}%</strong>
+                      <strong>{(run.analysis.meta.elapsedMs / 1000).toFixed(0)}s</strong>
+                      <strong>{formatRunCost(run.analysis.meta)}</strong>
+                    </button>
+                  ))}
+                  {visibleComparisonRuns.length === 0 ? (
+                    <p className={styles.runHistoryEmpty}>No matching models.</p>
+                  ) : null}
                 </div>
-                {visibleComparisonRuns.map((run) => (
-                  <button key={run.id} type="button" onClick={() => showSavedRun(run)}>
-                    <span title={run.analysis.meta.modelLabel}>{run.analysis.meta.modelLabel}</span>
-                    <strong>{run.metrics?.sameTrianglePercent.toFixed(1) ?? "-"}%</strong>
-                    <strong>{run.metrics?.baselineFoundPercent.toFixed(1) ?? "-"}%</strong>
-                    <strong>{run.metrics?.extraCandidatePercent.toFixed(1) ?? "-"}%</strong>
-                    <strong>{(run.analysis.meta.elapsedMs / 1000).toFixed(0)}s</strong>
-                    <strong>{formatRunCost(run.analysis.meta)}</strong>
-                  </button>
-                ))}
-                {visibleComparisonRuns.length === 0 ? (
-                  <p className={styles.runHistoryEmpty}>No matching models.</p>
-                ) : null}
               </div>
             ) : null}
 

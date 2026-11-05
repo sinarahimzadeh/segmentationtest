@@ -503,6 +503,13 @@
   font-size: 10px;
 }
 
+.runHistoryList {
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-color: #465359 #161d20;
+  scrollbar-width: thin;
+}
+
 .runHistoryHeader,
 .runHistory button {
   display: grid;
@@ -512,6 +519,10 @@
 }
 
 .runHistoryHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #161d20;
   padding: 3px 0;
   color: #657278;
   font-size: 7px;

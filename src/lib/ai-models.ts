@@ -1,7 +1,12 @@
 export const AI_MODEL_IDS = [
   "gpt-6.1-sol",
   "gpt-6.1-terra",
+  "gpt-6-sol",
   "gpt-6-luna",
+  "gpt-5.5",
+  "grok-4.7",
+  "grok-4.6",
+  "grok-4.3",
   "gemini-4-argon",
   "gemini-3.8-flash",
   "gemini-3.1-pro-preview",
@@ -28,7 +33,7 @@ export const AI_MODEL_IDS = [
 ] as const;
 
 export type AiModelId = (typeof AI_MODEL_IDS)[number];
-export type AiProvider = "openai" | "google" | "anthropic" | "mistral" | "openrouter";
+export type AiProvider = "openai" | "xai" | "google" | "anthropic" | "mistral" | "openrouter";
 export type ReasoningEffort = "default" | "none" | "minimal" | "low" | "medium" | "high";
 
 export type AiModelOption = {
@@ -64,6 +69,15 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     outputPricePerMillionTokens: 5,
   },
   {
+    id: "gpt-6-sol",
+    provider: "openai",
+    label: "GPT-6 Sol",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 2,
+    cachedInputPricePerMillionTokens: 0.2,
+    outputPricePerMillionTokens: 10,
+  },
+  {
     id: "gpt-6-luna",
     provider: "openai",
     label: "GPT-6 Luna",
@@ -71,6 +85,42 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 0.1,
     cachedInputPricePerMillionTokens: 0.01,
     outputPricePerMillionTokens: 0.5,
+  },
+  {
+    id: "gpt-5.5",
+    provider: "openai",
+    label: "GPT-5.5",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 5,
+    cachedInputPricePerMillionTokens: 0.5,
+    outputPricePerMillionTokens: 30,
+  },
+  {
+    id: "grok-4.7",
+    provider: "xai",
+    label: "Grok 4.7",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 2,
+    cachedInputPricePerMillionTokens: 0.5,
+    outputPricePerMillionTokens: 6,
+  },
+  {
+    id: "grok-4.6",
+    provider: "xai",
+    label: "Grok 4.6",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 2,
+    cachedInputPricePerMillionTokens: 0.5,
+    outputPricePerMillionTokens: 6,
+  },
+  {
+    id: "grok-4.3",
+    provider: "xai",
+    label: "Grok 4.3",
+    comparisonEfforts: ["low", "medium", "high"],
+    inputPricePerMillionTokens: 1.25,
+    cachedInputPricePerMillionTokens: 0.2,
+    outputPricePerMillionTokens: 2.5,
   },
   {
     id: "gemini-4-argon",

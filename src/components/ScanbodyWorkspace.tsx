@@ -870,6 +870,17 @@ export default function ScanbodyWorkspace() {
                       </option>
                     ))}
                   </optgroup>
+                  <optgroup label="xAI Grok">
+                    {AI_MODEL_OPTIONS.filter(
+                      (option) =>
+                        option.provider === "xai" &&
+                        option.comparisonEfforts.length > 0,
+                    ).map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
                   <optgroup label="Google Gemini">
                     {AI_MODEL_OPTIONS.filter(
                       (option) =>

@@ -8,6 +8,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { analyzeClaudeDirect } from "@/lib/direct-claude";
 import { MistralChatModel } from "@/lib/mistral-chat";
+import { ScanbodyChatXAI } from "@/lib/xai-chat";
 import {
   AI_MODEL_IDS,
   BASELINE_SELECTION,
@@ -220,8 +221,13 @@ export async function POST(request: Request) {
         "OPENROUTER_API_KEY is missing. Add it to .env.local and restart the server.",
       );
     }
+    if (selection.provider === "xai" && !process.env.XAI_API_KEY) {
+      throw new Error(
+        "XAI_API_KEY is missing. Add it to .env.local and restart the server.",
+      );
+    }
 
-    const detector = directClaude
+    const detector = directClaude || selection.provider === "xai"
       ? null
       : selection.provider === "openai"
         ? new ChatOpenAI({
@@ -229,7 +235,7 @@ export async function POST(request: Request) {
             apiKey: process.env.OPENAI_API_KEY,
             maxRetries: 1,
             useResponsesApi: true,
-            reasoning: { effort: selection.reasoningEffort as "low" | "medium" },
+            reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
           }).withStructuredOutput(detectionSchema, {
             name: "scanbody_roi_detection",
             strict: true,
@@ -346,23 +352,49 @@ export async function POST(request: Request) {
           image_url: { url: view.image, detail: "high" },
         });
       }
-      const result = await detector!.invoke([
+      const messages = [
         new SystemMessage(systemPrompt),
         new HumanMessage({ content }),
-      ]);
-      parsed = result.parsed;
-      const usage = (
-        result.raw as {
-          usage_metadata?: {
-            input_tokens?: number;
-            output_tokens?: number;
-            input_token_details?: { cache_read?: number };
-          };
+      ];
+      if (selection.provider === "xai") {
+        // LangChain's xAI Responses model carries all eight images. Ask xAI for
+        // native JSON Schema output, then validate the returned JSON locally.
+        const grok = new ScanbodyChatXAI({
+          model: selection.model,
+          apiKey: process.env.XAI_API_KEY,
+          reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
+          store: false,
+        });
+        const format = {
+          type: "json_schema" as const,
+          name: "scanbody_roi_detection",
+          schema: z.toJSONSchema(detectionSchema),
+          strict: true,
+        };
+        const result = await grok.invoke(messages, { text: { format } });
+        if (typeof result.content !== "string") {
+          throw new Error("Grok returned an unexpected response format.");
         }
-      ).usage_metadata;
-      inputTokens = usage?.input_tokens ?? null;
-      cachedInputTokens = usage?.input_token_details?.cache_read ?? null;
-      outputTokens = usage?.output_tokens ?? null;
+        parsed = detectionSchema.parse(JSON.parse(result.content));
+        inputTokens = result.usage_metadata?.input_tokens ?? null;
+        cachedInputTokens = result.usage_metadata?.input_token_details?.cache_read ?? null;
+        outputTokens = result.usage_metadata?.output_tokens ?? null;
+      } else {
+        const result = await detector!.invoke(messages);
+        parsed = result.parsed;
+        const usage = (
+          result.raw as {
+            usage_metadata?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              input_token_details?: { cache_read?: number };
+            };
+          }
+        ).usage_metadata;
+        inputTokens = usage?.input_tokens ?? null;
+        cachedInputTokens = usage?.input_token_details?.cache_read ?? null;
+        outputTokens = usage?.output_tokens ?? null;
+      }
     }
     const elapsedMs = Math.round(performance.now() - startedAt);
 

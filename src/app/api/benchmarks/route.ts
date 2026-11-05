@@ -22,7 +22,7 @@ const analysisSchema = z.object({
   meta: z.object({
     model: z.string(),
     modelLabel: z.string(),
-    provider: z.enum(["openai", "google", "anthropic", "mistral", "openrouter"]).default("openai"),
+    provider: z.enum(["openai", "xai", "google", "anthropic", "mistral", "openrouter"]).default("openai"),
     integration: z.enum(["langchain", "anthropic-sdk"]).optional(),
     reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
     elapsedMs: z.number(),

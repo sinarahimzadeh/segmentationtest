@@ -196,9 +196,9 @@ export async function POST(request: Request) {
     const selection = resolveModelSelection(body.run);
     const directClaude = body.directClaude && selection.provider === "anthropic";
 
-    if (selection.provider === "openai" && !process.env.OPENAI_API_KEY) {
+    if (selection.provider === "openai" && !process.env.OPENAI_API_KEY && !process.env.OPENROUTER_API_KEY) {
       throw new Error(
-        "OPENAI_API_KEY is missing. Add it to .env.local and restart the server.",
+        "OPENAI_API_KEY or OPENROUTER_API_KEY is missing. Add it to .env.local and restart the server.",
       );
     }
     if (selection.provider === "google" && !process.env.GOOGLE_API_KEY) {
@@ -230,15 +230,30 @@ export async function POST(request: Request) {
     const detector = directClaude || selection.provider === "xai"
       ? null
       : selection.provider === "openai"
-        ? new ChatOpenAI({
-            model: selection.model,
-            apiKey: process.env.OPENAI_API_KEY,
-            maxRetries: 1,
-            useResponsesApi: true,
-            reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
-          }).withStructuredOutput(detectionSchema, {
+        ? (!process.env.OPENAI_API_KEY && process.env.OPENROUTER_API_KEY
+            ? new ChatOpenAI({
+                model: `openai/${selection.model}`,
+                apiKey: process.env.OPENROUTER_API_KEY,
+                maxRetries: 1,
+                configuration: {
+                  baseURL: "https://openrouter.ai/api/v1",
+                },
+                modelKwargs: {
+                  ...(selection.reasoningEffort !== "default"
+                    ? { reasoning: { effort: selection.reasoningEffort } }
+                    : {}),
+                },
+              })
+            : new ChatOpenAI({
+                model: selection.model,
+                apiKey: process.env.OPENAI_API_KEY,
+                maxRetries: 1,
+                useResponsesApi: true,
+                reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
+              })
+          ).withStructuredOutput(detectionSchema, {
             name: "scanbody_roi_detection",
-            strict: true,
+            strict: Boolean(process.env.OPENAI_API_KEY),
             includeRaw: true,
           })
         : selection.provider === "google"
@@ -380,7 +395,40 @@ export async function POST(request: Request) {
         cachedInputTokens = result.usage_metadata?.input_token_details?.cache_read ?? null;
         outputTokens = result.usage_metadata?.output_tokens ?? null;
       } else {
-        const result = await detector!.invoke(messages);
+        let result: {
+          parsed: z.infer<typeof detectionSchema>;
+          raw: unknown;
+        };
+        try {
+          result = await detector!.invoke(messages);
+        } catch (detectorError) {
+          const isQuotaOrAuthError =
+            selection.provider === "openai" &&
+            Boolean(process.env.OPENROUTER_API_KEY) &&
+            detectorError instanceof Error &&
+            /quota|credit|insufficient|billing|429|402|401/i.test(detectorError.message);
+          if (isQuotaOrAuthError) {
+            const fallbackOpenRouterDetector = new ChatOpenAI({
+              model: `openai/${selection.model}`,
+              apiKey: process.env.OPENROUTER_API_KEY,
+              maxRetries: 1,
+              configuration: {
+                baseURL: "https://openrouter.ai/api/v1",
+              },
+              modelKwargs: {
+                ...(selection.reasoningEffort !== "default"
+                  ? { reasoning: { effort: selection.reasoningEffort } }
+                  : {}),
+              },
+            }).withStructuredOutput(detectionSchema, {
+              name: "scanbody_roi_detection",
+              includeRaw: true,
+            });
+            result = await fallbackOpenRouterDetector.invoke(messages);
+          } else {
+            throw detectorError;
+          }
+        }
         parsed = result.parsed;
         const usage = (
           result.raw as {

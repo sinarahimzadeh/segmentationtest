@@ -36,9 +36,14 @@ import {
 import {
   AI_MODEL_OPTIONS,
   BASELINE_SELECTION,
+  PROCESSING_SPEEDS,
   getAiModelOption,
+  getProcessingSpeeds,
+  getProcessingSpeedLabel,
+  getSpeedPriceMultiplier,
   type AiModelId,
   type ReasoningEffort,
+  type ProcessingSpeed,
 } from "@/lib/ai-models";
 import {
   CAPTURE_SIZE,
@@ -160,6 +165,7 @@ export default function ScanbodyWorkspace() {
     useState<AiModelId>("gpt-6.1-sol");
   const [comparisonEffort, setComparisonEffort] =
     useState<ReasoningEffort>("low");
+  const [comparisonSpeed, setComparisonSpeed] = useState<ProcessingSpeed>("standard");
   const [analysisNotice, setAnalysisNotice] = useState<string | null>(null);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -480,6 +486,7 @@ export default function ScanbodyWorkspace() {
                   type: "comparison",
                   model: comparisonModel,
                   reasoningEffort: comparisonEffort,
+                  processingSpeed: comparisonSpeed,
                 },
           // Send every captured camera angle. A scanbody that is unclear in one
           // render can be much easier to recognize from another side.
@@ -526,7 +533,7 @@ export default function ScanbodyWorkspace() {
         id:
           runKind === "baseline"
             ? `baseline:v${BENCHMARK_STORAGE_VERSION}:${modelInfo.key}`
-            : `comparison:${modelInfo.key}:${Date.now()}:${runModel}:${runEffort}`,
+            : `comparison:${modelInfo.key}:${Date.now()}:${runModel}:${runEffort}:${result.meta.processingSpeed ?? "standard"}`,
         storageVersion: BENCHMARK_STORAGE_VERSION,
         meshKey: modelInfo.key,
         meshName: modelInfo.name,
@@ -534,6 +541,9 @@ export default function ScanbodyWorkspace() {
         kind: runKind,
         model: runModel,
         reasoningEffort: runEffort,
+        ...(runKind === "comparison" && result.meta.processingSpeed
+          ? { processingSpeed: result.meta.processingSpeed }
+          : {}),
         createdAt: new Date().toISOString(),
         analysis: result,
         selectedTriangleIds: [...triangleIds].sort((a, b) => a - b),
@@ -597,6 +607,7 @@ export default function ScanbodyWorkspace() {
     capturedViews,
     comparisonEffort,
     comparisonModel,
+    comparisonSpeed,
     directClaude,
     mapAnalysisToTriangles,
     modelInfo,
@@ -857,6 +868,7 @@ export default function ScanbodyWorkspace() {
                       .comparisonEfforts[0];
                     setComparisonModel(model);
                     setComparisonEffort(firstEffort);
+                    setComparisonSpeed("standard");
                   }}
                 >
                   <optgroup label="OpenAI">
@@ -935,6 +947,28 @@ export default function ScanbodyWorkspace() {
                 </select>
               </label>
             </div>
+            {comparisonModelOption.speedPriceMultipliers ? (
+              <label className={styles.speedSelector}>
+                <span>Speed</span>
+                <select
+                  value={comparisonSpeed}
+                  disabled={Boolean(busyLabel)}
+                  onChange={(event) => setComparisonSpeed(event.currentTarget.value as ProcessingSpeed)}
+                >
+                  {PROCESSING_SPEEDS.map((speed) => {
+                    const available = getProcessingSpeeds(comparisonModel).includes(speed);
+                    return (
+                      <option key={speed} value={speed} disabled={!available}>
+                        {getProcessingSpeedLabel(speed)}{available
+                          ? ` · ${getSpeedPriceMultiplier(comparisonModel, speed)}× token price`
+                          : " · unavailable for this model"}
+                      </option>
+                    );
+                  })}
+                </select>
+                <small>Fast and Ultrafast require that speed tier. An unavailable tier returns an error.</small>
+              </label>
+            ) : null}
             {comparisonModelOption.provider === "anthropic" ? (
               <label className={styles.saveToggle}>
                 <span>

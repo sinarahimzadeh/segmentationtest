@@ -50,6 +50,18 @@ final triangle IDs, detected object count, model time, estimated API cost, and
 quality metrics. Reopening the same STL loads its saved files. Replacing the
 baseline clears comparison files made against the old baseline.
 
+For OpenAI models selected through OpenRouter, **Speed** is separate from the
+thinking level. Fast is available for all five listed OpenAI models. Ultrafast
+is currently available for GPT-6.1 Sol. Unsupported speed options are disabled.
+Fast token prices are 2x Standard (2.5x for GPT-5.5); Sol Ultrafast is 6x.
+
+Fast/Ultrafast requests pin `openai/fast` or `openai/ultrafast`, disable provider
+fallbacks, and verify the returned `service_tier`. An unconfirmed or unavailable
+tier produces an error. The saved run label and filename include the speed;
+JSON also records `processingSpeed`, `serviceTier`, and `reportedCostUsd`.
+The app uses OpenRouter's reported cost when provided, with a tier-specific
+estimate as a fallback. Existing saved runs continue to load.
+
 ## Code map
 
 - `src/lib/capture-views.ts` renders the eight normal images and the hidden

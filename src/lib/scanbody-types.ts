@@ -1,4 +1,4 @@
-import type { AiProvider, ReasoningEffort } from "./ai-models";
+import type { AiProvider, ReasoningEffort, ProcessingSpeed } from "./ai-models";
 
 export const CAPTURE_SIZE = 1024;
 
@@ -24,11 +24,14 @@ export type AnalysisResult = {
     // Present only on new Claude runs so direct and LangChain results are distinct.
     integration?: "langchain" | "anthropic-sdk";
     reasoningEffort: ReasoningEffort;
+    processingSpeed?: ProcessingSpeed;
+    serviceTier?: string | null;
+    reportedCostUsd?: number | null;
     elapsedMs: number;
     inputTokens: number | null;
     cachedInputTokens: number | null;
     outputTokens: number | null;
-    // Calculated from token usage using the configured paid API prices.
+    // OpenRouter's reported charge when available; otherwise a paid-price estimate.
     estimatedCostUsd: number | null;
     // Legacy compatibility for older benchmark JSON. New runs always set false,
     // and the UI always displays estimatedCostUsd instead of guessing billing.

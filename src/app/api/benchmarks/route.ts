@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { AI_MODEL_IDS } from "@/lib/ai-models";
+import { AI_MODEL_IDS, PROCESSING_SPEEDS } from "@/lib/ai-models";
 
 const meshKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
 const pointSchema = z.tuple([z.number(), z.number()]);
@@ -25,6 +25,9 @@ const analysisSchema = z.object({
     provider: z.enum(["openai", "xai", "google", "anthropic", "mistral", "openrouter"]).default("openai"),
     integration: z.enum(["langchain", "anthropic-sdk"]).optional(),
     reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
+    processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
+    serviceTier: z.string().nullable().optional(),
+    reportedCostUsd: z.number().nonnegative().nullable().optional(),
     elapsedMs: z.number(),
     inputTokens: z.number().nullable(),
     cachedInputTokens: z.number().nullable(),
@@ -53,6 +56,7 @@ const savedRunSchema = z.object({
   kind: z.enum(["baseline", "comparison"]),
   model: z.enum(AI_MODEL_IDS),
   reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
+  processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
   createdAt: z.string(),
   analysis: analysisSchema,
   selectedTriangleIds: z.array(z.number().int().nonnegative()),
@@ -76,7 +80,9 @@ function getMeshDirectory(meshKey: string) {
 
 function comparisonFileName(run: z.infer<typeof savedRunSchema>) {
   const timestamp = run.createdAt.replace(/[:.]/g, "-");
-  return `${timestamp}__${run.model}__${run.reasoningEffort}.json`;
+  const speed = run.processingSpeed ?? run.analysis.meta.processingSpeed ?? "standard";
+  const suffix = speed === "standard" ? "" : `__${speed}`;
+  return `${timestamp}__${run.model}__${run.reasoningEffort}${suffix}.json`;
 }
 
 async function removeOldComparisonFiles(comparisonsDirectory: string) {

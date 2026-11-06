@@ -40,6 +40,8 @@ export const AI_MODEL_IDS = [
 export type AiModelId = (typeof AI_MODEL_IDS)[number];
 export type AiProvider = "openai" | "xai" | "google" | "anthropic" | "mistral" | "openrouter";
 export type ReasoningEffort = "default" | "none" | "minimal" | "low" | "medium" | "high";
+export const PROCESSING_SPEEDS = ["standard", "fast", "ultrafast"] as const;
+export type ProcessingSpeed = (typeof PROCESSING_SPEEDS)[number];
 
 export type AiModelOption = {
   id: AiModelId;
@@ -50,6 +52,8 @@ export type AiModelOption = {
   cachedInputPricePerMillionTokens: number;
   outputPricePerMillionTokens: number;
   apiModelName?: string;
+  // Only OpenAI models selected through OpenRouter offer this speed selector.
+  speedPriceMultipliers?: Partial<Record<ProcessingSpeed, number>>;
 };
 
 /** One shared whitelist drives the dropdown, API validation, and cost estimate. */
@@ -319,8 +323,9 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     label: "GPT-6.1 Terra (OpenRouter)",
     apiModelName: "openai/gpt-6.1-terra",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2 },
     inputPricePerMillionTokens: 1,
-    cachedInputPricePerMillionTokens: 0.1,
+    cachedInputPricePerMillionTokens: 0.05,
     outputPricePerMillionTokens: 5,
   },
   {
@@ -329,8 +334,9 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     label: "GPT-6.1 Sol (OpenRouter)",
     apiModelName: "openai/gpt-6.1-sol",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2, ultrafast: 6 },
     inputPricePerMillionTokens: 2,
-    cachedInputPricePerMillionTokens: 0.2,
+    cachedInputPricePerMillionTokens: 0.1,
     outputPricePerMillionTokens: 10,
   },
   {
@@ -339,6 +345,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     label: "GPT-6 Sol (OpenRouter)",
     apiModelName: "openai/gpt-6-sol",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2 },
     inputPricePerMillionTokens: 2,
     cachedInputPricePerMillionTokens: 0.2,
     outputPricePerMillionTokens: 10,
@@ -349,6 +356,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     label: "GPT-6 Luna (OpenRouter)",
     apiModelName: "openai/gpt-6-luna",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2 },
     inputPricePerMillionTokens: 0.1,
     cachedInputPricePerMillionTokens: 0.01,
     outputPricePerMillionTokens: 0.5,
@@ -359,6 +367,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     label: "GPT-5.5 (OpenRouter)",
     apiModelName: "openai/gpt-5.5",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2.5 },
     inputPricePerMillionTokens: 5,
     cachedInputPricePerMillionTokens: 0.5,
     outputPricePerMillionTokens: 30,
@@ -413,10 +422,27 @@ export function isAllowedComparisonSelection(
 export function getModelRunLabel(
   modelId: AiModelId,
   reasoningEffort: ReasoningEffort,
+  processingSpeed: ProcessingSpeed = "standard",
 ) {
   return `${getAiModelOption(modelId).label} · ${
     reasoningEffort[0].toUpperCase() + reasoningEffort.slice(1)
-  }`;
+  }${processingSpeed === "standard" ? "" : ` · ${getProcessingSpeedLabel(processingSpeed)}`}`;
+}
+
+export function getProcessingSpeedLabel(speed: ProcessingSpeed) {
+  return speed === "ultrafast" ? "Ultrafast" : speed === "fast" ? "Fast" : "Standard";
+}
+
+export function getProcessingSpeeds(modelId: AiModelId) {
+  const prices = getAiModelOption(modelId).speedPriceMultipliers;
+  return PROCESSING_SPEEDS.filter((speed) => speed === "standard" || prices?.[speed] !== undefined);
+}
+
+export function getSpeedPriceMultiplier(modelId: AiModelId, speed: ProcessingSpeed) {
+  if (speed === "standard") return 1;
+  const multiplier = getAiModelOption(modelId).speedPriceMultipliers?.[speed];
+  if (multiplier === undefined) throw new Error(`${getAiModelOption(modelId).label} does not offer ${getProcessingSpeedLabel(speed)}.`);
+  return multiplier;
 }
 
 export function estimatePaidCostUsd({
@@ -424,11 +450,13 @@ export function estimatePaidCostUsd({
   inputTokens,
   cachedInputTokens,
   outputTokens,
+  processingSpeed = "standard",
 }: {
   modelId: AiModelId;
   inputTokens: number | null;
   cachedInputTokens: number | null;
   outputTokens: number | null;
+  processingSpeed?: ProcessingSpeed;
 }) {
   if (inputTokens === null || outputTokens === null) return null;
   const prices = getAiModelOption(modelId);
@@ -438,7 +466,7 @@ export function estimatePaidCostUsd({
   );
   const uncachedInputTokens = inputTokens - safeCachedTokens;
 
-  return (
+  return getSpeedPriceMultiplier(modelId, processingSpeed) * (
     (uncachedInputTokens / 1_000_000) *
       prices.inputPricePerMillionTokens +
     (safeCachedTokens / 1_000_000) *

@@ -9,16 +9,20 @@ import { z } from "zod";
 import { analyzeClaudeDirect } from "@/lib/direct-claude";
 import { MistralChatModel } from "@/lib/mistral-chat";
 import { ScanbodyChatXAI } from "@/lib/xai-chat";
+import { createOpenRouterReceiptFetch, getOpenRouterSpeedRouting, type OpenRouterReceipt } from "@/lib/openrouter-speed";
 import {
   AI_MODEL_IDS,
+  PROCESSING_SPEEDS,
   BASELINE_SELECTION,
   estimatePaidCostUsd,
   getAiModelOption,
   getModelRunLabel,
+  getProcessingSpeeds,
   isAllowedComparisonSelection,
   type AiModelId,
   type AiProvider,
   type ReasoningEffort,
+  type ProcessingSpeed,
 } from "@/lib/ai-models";
 
 /**
@@ -48,6 +52,7 @@ const requestSchema = z.object({
       type: z.literal("comparison"),
       model: z.enum(AI_MODEL_IDS),
       reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
+      processingSpeed: z.enum(PROCESSING_SPEEDS).default("standard"),
     }),
   ]),
   views: z
@@ -65,10 +70,12 @@ function resolveModelSelection(run: z.infer<typeof requestSchema>["run"]): {
   model: AiModelId;
   provider: AiProvider;
   reasoningEffort: ReasoningEffort;
+  processingSpeed: ProcessingSpeed;
 } {
   if (run.type === "baseline") {
     return {
       ...BASELINE_SELECTION,
+      processingSpeed: "standard",
       provider: getAiModelOption(BASELINE_SELECTION.model).provider,
     };
   }
@@ -77,10 +84,14 @@ function resolveModelSelection(run: z.infer<typeof requestSchema>["run"]): {
       `${run.model} does not support ${run.reasoningEffort} in this benchmark.`,
     );
   }
+  if (!getProcessingSpeeds(run.model).includes(run.processingSpeed)) {
+    throw new Error(`${run.model} does not offer ${run.processingSpeed} processing.`);
+  }
   return {
     model: run.model,
     provider: getAiModelOption(run.model).provider,
     reasoningEffort: run.reasoningEffort,
+    processingSpeed: run.processingSpeed,
   };
 }
 
@@ -195,6 +206,9 @@ export async function POST(request: Request) {
     const detectionSchema = createDetectionSchema(outlinePointCount);
     const selection = resolveModelSelection(body.run);
     const directClaude = body.directClaude && selection.provider === "anthropic";
+    const isOpenRouterOpenAi = selection.provider === "openrouter" &&
+      getAiModelOption(selection.model).apiModelName?.startsWith("openai/");
+    const openRouterReceipt: OpenRouterReceipt = { serviceTier: null, reportedCostUsd: null };
 
     if (selection.provider === "openai" && !process.env.OPENAI_API_KEY && !process.env.OPENROUTER_API_KEY) {
       throw new Error(
@@ -294,11 +308,14 @@ export async function POST(request: Request) {
                     getAiModelOption(selection.model).apiModelName ??
                     selection.model,
                   apiKey: process.env.OPENROUTER_API_KEY,
-                  maxRetries: 1,
+                  // A tier mismatch must not trigger another potentially paid call.
+                  maxRetries: selection.processingSpeed === "standard" ? 1 : 0,
                   configuration: {
                     baseURL: "https://openrouter.ai/api/v1",
+                    fetch: createOpenRouterReceiptFetch(openRouterReceipt, isOpenRouterOpenAi ? selection.processingSpeed : undefined),
                   },
                   modelKwargs: {
+                    ...(isOpenRouterOpenAi ? getOpenRouterSpeedRouting(selection.processingSpeed) : {}),
                     ...(selection.reasoningEffort !== "default"
                       ? { reasoning: { effort: selection.reasoningEffort } }
                       : {}),
@@ -489,25 +506,27 @@ export async function POST(request: Request) {
       views,
       meta: {
         model: selection.model,
-        modelLabel: `${getModelRunLabel(selection.model, selection.reasoningEffort)}${directClaude ? " · Direct API" : ""}`,
+        modelLabel: `${getModelRunLabel(selection.model, selection.reasoningEffort, selection.processingSpeed)}${directClaude ? " · Direct API" : ""}`,
         provider: selection.provider,
         ...(selection.provider === "anthropic"
           ? { integration: directClaude ? "anthropic-sdk" : "langchain" }
           : {}),
         reasoningEffort: selection.reasoningEffort,
+        ...(isOpenRouterOpenAi ? { processingSpeed: selection.processingSpeed } : {}),
+        ...(selection.provider === "openrouter" ? openRouterReceipt : {}),
         outlinePointsPerScanbody: outlinePointCount,
         elapsedMs,
         inputTokens,
         cachedInputTokens,
         outputTokens,
-        estimatedCostUsd: estimatePaidCostUsd({
+        estimatedCostUsd: openRouterReceipt.reportedCostUsd ?? estimatePaidCostUsd({
           modelId: selection.model,
           inputTokens,
           cachedInputTokens,
           outputTokens,
+          processingSpeed: selection.processingSpeed,
         }),
-        // Provider responses do not reliably say whether a request was billed.
-        // Benchmarks always show the calculated paid cost. Keep this legacy
+        // Show OpenRouter's reported cost or the calculated paid cost. Keep this legacy
         // field only so old saved JSON files remain compatible.
         freeTierEligible: false,
       },

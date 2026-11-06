@@ -1,5 +1,5 @@
 import type { AnalysisResult } from "./scanbody-types";
-import type { AiModelId, ReasoningEffort } from "./ai-models";
+import type { AiModelId, ReasoningEffort, ProcessingSpeed } from "./ai-models";
 
 export const BENCHMARK_STORAGE_VERSION = 1;
 
@@ -24,6 +24,7 @@ export type SavedBenchmarkRun = {
   kind: "baseline" | "comparison";
   model: AiModelId;
   reasoningEffort: ReasoningEffort;
+  processingSpeed?: ProcessingSpeed;
   createdAt: string;
   analysis: AnalysisResult;
   selectedTriangleIds: number[];

@@ -442,6 +442,47 @@
   gap: 6px;
 }
 
+.toothNumberResult {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #344449;
+  border-radius: 6px;
+  background: #111719;
+  color: #a8b8be;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.toothNumberResult > strong {
+  color: #dce7eb;
+}
+
+.toothNumberResult p {
+  margin: 6px 0;
+}
+
+.toothNumberResult summary {
+  cursor: pointer;
+  color: #e4b87a;
+}
+
+.toothNumberList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.toothNumberList span {
+  padding: 4px 9px;
+  border: 1px solid #28645e;
+  border-radius: 5px;
+  background: #15322f;
+  color: #85ded1;
+  font-family: var(--font-geist-mono), monospace;
+  font-weight: 700;
+}
+
 .metricGrid span {
   padding: 7px;
   border-radius: 4px;

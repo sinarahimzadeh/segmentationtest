@@ -115,11 +115,18 @@ function loadRoute() {
 }
 
 test("real route keeps prompt/settings, maps outlines, and totals eight independent receipts", async (t) => {
-  const previousKey = process.env.OPENROUTER_API_KEY;
-  process.env.OPENROUTER_API_KEY = "offline-test-key";
+  const settings = {
+    OPENROUTER_API_KEY: "offline-test-key",
+    SCANBODY_OUTLINE_POINTS: "40",
+    SCANBODY_OUTLINE_MIN_POINTS: "16",
+  };
+  const previousSettings = Object.fromEntries(Object.keys(settings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, settings);
   t.after(() => {
-    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
-    else process.env.OPENROUTER_API_KEY = previousKey;
+    for (const [key, value] of Object.entries(previousSettings)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
   const POST = loadRoute();
   const requests = [];
@@ -135,7 +142,15 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
       id: `offline-${requests.length}`, model: body.model, object: "chat.completion", created: 1,
       service_tier: tier,
       choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({
-        views: ids.map((view) => ({ view, detections: [{ label: "scanbody", outline: "10,10 20,10 20,20", confidence: 0.9 }] })),
+        views: ids.map((view) => {
+          // Simulate a short simple outline and a longer detailed outline.
+          const count = Number(view.slice("view-".length)) % 2 === 0 ? 16 : 40;
+          const outline = Array.from({ length: count }, (_, index) => {
+            const angle = index * Math.PI * 2 / count;
+            return `${Math.round(100 + 30 * Math.cos(angle))},${Math.round(100 + 30 * Math.sin(angle))}`;
+          }).join(" ");
+          return { view, detections: [{ label: "scanbody", outline, confidence: 0.9 }] };
+        }),
       }) } }],
       usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120,
         prompt_tokens_details: { cached_tokens: 10 }, cost: 0.0123 },
@@ -152,9 +167,16 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
   }
   const grouped = await analyze(false);
   const groupedRequest = requests[0];
+  assert.match(groupedRequest.messages[0].content, /between 16 and 40/);
+  assert.match(groupedRequest.messages[1].content[0].text, /between 16 and 40/);
+  assert.match(JSON.stringify(groupedRequest.response_format), /between 16 and 40/);
+  assert.doesNotMatch(JSON.stringify(groupedRequest.messages), /exactly 40/);
   const parallel = await analyze(true);
   assert.equal(requests.length, 9);
   assert.deepEqual(parallel.views, grouped.views);
+  assert.deepEqual(parallel.views.map((view) => view.detections[0].outline.length), [16, 40, 16, 40, 16, 40, 16, 40]);
+  assert.equal(parallel.meta.outlineMinPointsPerScanbody, 16);
+  assert.equal(parallel.meta.outlineMaxPointsPerScanbody, 40);
   for (let index = 0; index < 8; index++) {
     const body = requests[index + 1];
     assert.deepEqual(body.messages[0], groupedRequest.messages[0]);
@@ -184,4 +206,21 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
     assert.equal(body.provider.allow_fallbacks, false);
     assert.deepEqual(body.reasoning, { effort: "high" });
   }
+  // Equal bounds restore a fixed point count without contradictory instructions.
+  process.env.SCANBODY_OUTLINE_MIN_POINTS = "40";
+  const fixed = await analyze(false);
+  assert.match(requests.at(-1).messages[0].content, /exactly 40/);
+  assert.doesNotMatch(requests.at(-1).messages[0].content, /fewest points|do not pad/);
+  assert.equal(fixed.meta.outlineMinPointsPerScanbody, 40);
+  // Reject invalid settings before any potentially paid provider request.
+  process.env.SCANBODY_OUTLINE_MIN_POINTS = "41";
+  const callsBefore = requests.length;
+  const invalid = await POST(new Request("http://offline/api/analyze", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageSize: 1024, saveFiles: false, parallelViews: true,
+      run: { type: "baseline", useOpenRouter: true }, views }),
+  }));
+  assert.equal(invalid.status, 400);
+  assert.match((await invalid.json()).error, /SCANBODY_OUTLINE_MIN_POINTS/);
+  assert.equal(requests.length, callsBefore);
 });

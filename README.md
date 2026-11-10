@@ -22,11 +22,18 @@ OPENAI_API_KEY=your_api_key_here
 GOOGLE_API_KEY=your_google_ai_studio_key_here
 XAI_API_KEY=your_xai_api_key_here
 SCANBODY_OUTLINE_POINTS=40
+SCANBODY_OUTLINE_MIN_POINTS=16
 ```
 
-`SCANBODY_OUTLINE_POINTS` controls how many ordered edge points the model must
-return for each detected scanbody. It accepts whole numbers from `3` to
-`10000`; `40` is the default used for the first detection pass.
+The AI chooses the number of outline points separately for each scanbody in
+each image: fewer for simple boundaries, more for detailed ones. The default
+range is **16–40 points**. `SCANBODY_OUTLINE_POINTS` sets the maximum (`3` to
+`10000`), and `SCANBODY_OUTLINE_MIN_POINTS` sets the minimum (`3` to the maximum).
+Set both to `40` to restore a fixed count. Restart the app after editing them.
+These settings apply to every provider, in grouped and parallel mode. Saved
+results record the requested minimum and maximum; each outline array contains
+the actual returned points. This may reduce output and time, but the quality
+and speed difference must be measured against the saved baseline.
 
 Then run:
 
@@ -77,6 +84,34 @@ The app uses OpenRouter's reported cost when provided, with a tier-specific
 estimate as a fallback. Existing saved runs continue to load.
 
 ## Code map
+
+### Separate tooth-number estimate
+
+After segmentation, **Estimate tooth numbers** makes a separate Sol Medium API
+request with **one teeth-facing image** and its existing scanbody outlines. It uses the
+OpenRouter/OpenAI baseline-provider toggle, independently of the comparison
+model, and displays the estimated permanent-tooth FDI positions in its own
+panel below Highlight. Numbers are not drawn on camera images. The segmentation
+prompt, mesh selection, exports, and benchmark scores are unchanged. Only
+scanbodies with outlines in the selected view are numbered. **Auto** chooses
+between Top and Bottom using the number of existing scanbody detections, with
+confidence breaking ties. This is a heuristic, not an anatomical orientation
+guarantee. Preview the chosen image and override it with Top or Bottom if needed.
+PCA may put an upper jaw's teeth-facing surface in the Bottom image. The endpoint
+also filters out other views if an older browser sends them.
+
+Optional jaw and patient-right hints help with orientation: PCA camera names
+do not establish the patient's anatomical left/right. Unknown positions remain
+unassigned with an explanation. FDI uses the two-digit tooth designation system
+described by [ISO 3950](https://www.iso.org/standard/68292.html).
+
+The button calls `/api/tooth-numbers` only when clicked. Its cost and time are
+shown separately. **Save result files** also controls these results, saved under
+`benchmark-output/<STL SHA-256>/tooth-numbers/<timestamp>.json`, including the
+actual returned JSON. It never replaces baseline/comparison files or the latest
+segmentation debug JSON. No screenshot copies are stored in these files.
+
+### Segmentation files
 
 - `src/lib/capture-views.ts` renders the eight normal images and the hidden
   per-pixel triangle-ID images.

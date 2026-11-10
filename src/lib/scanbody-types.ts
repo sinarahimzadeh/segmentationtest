@@ -27,6 +27,10 @@ export type AnalysisResult = {
     processingSpeed?: ProcessingSpeed;
     parallelViews?: boolean;
     viewRequestCount?: number;
+    // Requested point range; actual counts are each detection's outline.length.
+    outlinePointsPerScanbody?: number;
+    outlineMinPointsPerScanbody?: number;
+    outlineMaxPointsPerScanbody?: number;
     serviceTier?: string | null;
     reportedCostUsd?: number | null;
     elapsedMs: number;

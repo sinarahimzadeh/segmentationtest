@@ -7,6 +7,7 @@ import {
   Download,
   Eye,
   FileUp,
+  Hash,
   Layers3,
   LoaderCircle,
   RotateCcw,
@@ -52,6 +53,8 @@ import {
   type Detection,
   type TriangleIdMap,
 } from "@/lib/scanbody-types";
+import type { JawHint, RightSideHint, ToothNumberResult } from "@/lib/tooth-numbering";
+import { chooseToothNumberView, type ToothViewChoice } from "@/lib/tooth-number-view";
 
 type ViewerState = {
   scene: THREE.Scene;
@@ -154,6 +157,10 @@ export default function ScanbodyWorkspace() {
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [capturedViews, setCapturedViews] = useState<CapturedView[]>([]);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [toothNumbers, setToothNumbers] = useState<ToothNumberResult | null>(null);
+  const [toothJawHint, setToothJawHint] = useState<JawHint>("auto");
+  const [toothRightSideHint, setToothRightSideHint] = useState<RightSideHint>("unknown");
+  const [toothViewChoice, setToothViewChoice] = useState<ToothViewChoice>("auto");
   const [selectedTriangleIds, setSelectedTriangleIds] = useState<Set<number>>(
     () => new Set(),
   );
@@ -320,6 +327,10 @@ export default function ScanbodyWorkspace() {
       setError(null);
       setAnalysisNotice(null);
       setAnalysis(null);
+      setToothNumbers(null);
+      setToothJawHint("auto");
+      setToothRightSideHint("unknown");
+      setToothViewChoice("auto");
       setCapturedViews([]);
       setSelectedTriangleIds(new Set());
       setSelectedObjectCount(0);
@@ -506,6 +517,8 @@ export default function ScanbodyWorkspace() {
       const result = payload as AnalysisResult;
       const { triangleIds, groupCount } = mapAnalysisToTriangles(result);
       setAnalysis(result);
+      setToothNumbers(null);
+      setToothRightSideHint("unknown");
       setSelectedTriangleIds(triangleIds);
       setSelectedObjectCount(groupCount);
       const returnedDetectionCount = result.views.reduce(
@@ -624,14 +637,61 @@ export default function ScanbodyWorkspace() {
     useOpenRouterBaseline,
   ]);
 
+  // This is the only browser action that calls the tooth-numbering API. Loading
+  // an STL, segmenting, and viewing saved comparisons never trigger this call.
+  const estimateToothNumbers = useCallback(async () => {
+    if (!analysis || !modelInfo || busyLabel || capturedViews.length === 0) return;
+    const viewName = chooseToothNumberView(capturedViews.map((view) => view.name), analysis.views, toothViewChoice);
+    const referenceView = capturedViews.find((view) => view.name === viewName);
+    const detections = analysis.views.find((view) => view.view === viewName)?.detections ?? [];
+    if (!referenceView || detections.length === 0) {
+      setError("Tooth numbering needs a teeth-facing image with detected scanbody outlines. Try the other view.");
+      return;
+    }
+    setBusyLabel("Estimating tooth numbers");
+    setError(null);
+    setToothNumbers(null);
+    try {
+      const response = await fetch("/api/tooth-numbers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          meshKey: modelInfo.key, meshName: modelInfo.name,
+          imageSize: CAPTURE_SIZE, useOpenRouter: useOpenRouterBaseline,
+          saveFiles: saveResultFiles, jawHint: toothJawHint, rightSideHint: toothRightSideHint,
+          referenceView: referenceView.name,
+          views: [{
+            name: referenceView.name, image: referenceView.image,
+            detections: detections
+              .map((detection, index) => ({
+                detectionId: `${referenceView.name}:${index + 1}`, outline: detection.outline,
+              })),
+          }],
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Tooth numbering failed.");
+      setToothNumbers(result as ToothNumberResult);
+      if (result.saveError) setAnalysisNotice(result.saveError);
+      else if (result.savedPath) setAnalysisNotice(`Tooth-number JSON saved to ${result.savedPath}`);
+    } catch (numberingError) {
+      setError(numberingError instanceof Error ? numberingError.message : "Tooth numbering failed.");
+    } finally {
+      setBusyLabel(null);
+    }
+  }, [analysis, modelInfo, busyLabel, capturedViews, useOpenRouterBaseline, saveResultFiles, toothJawHint, toothRightSideHint, toothViewChoice]);
+
   const showSavedRun = useCallback((run: SavedBenchmarkRun) => {
+    if (busyLabel) return;
     setAnalysis(run.analysis);
+    setToothNumbers(null);
+    setToothRightSideHint("unknown");
     setSelectedTriangleIds(new Set(run.selectedTriangleIds));
     setSelectedObjectCount(run.objectCount);
     setAnalysisNotice(
       `${run.analysis.meta.modelLabel} result loaded.`,
     );
-  }, []);
+  }, [busyLabel]);
 
   const exportStl = useCallback(
     async (mode: StlExportMode) => {
@@ -680,6 +740,14 @@ export default function ScanbodyWorkspace() {
     0,
   );
   const comparisonModelOption = getAiModelOption(comparisonModel);
+  const toothReferenceName = chooseToothNumberView(capturedViews.map((view) => view.name), analysis?.views ?? [], toothViewChoice);
+  const toothReferenceLabel = toothReferenceName === "bottom" ? "Bottom" : "Top";
+  const hasToothTargets = Boolean(toothReferenceName && analysis?.views.find((view) => view.view === toothReferenceName)?.detections.length);
+  const toothFdiNumbers = [...new Set(toothNumbers?.assignments.flatMap((assignment) =>
+    assignment.toothFdi === null ? [] : [assignment.toothFdi]) ?? [])].sort((a, b) => a - b);
+  const uncertainToothReasons = [...new Set(toothNumbers?.assignments
+    .filter((assignment) => assignment.toothFdi === null)
+    .map((assignment) => assignment.reason) ?? [])];
   const latestComparison = comparisonRuns[0] ?? null;
   // Ignore separators such as the middle dot, so "terra high" finds
   // "GPT-6.1 Terra · High" without requiring the user to type that symbol.
@@ -1155,6 +1223,89 @@ export default function ScanbodyWorkspace() {
             >
               Clear highlight
             </button>
+          </section>
+
+          <section className={styles.panelSection}>
+            <div className={styles.sectionHeading}>
+              <Hash size={16} />
+              <h2>Tooth numbers (FDI)</h2>
+            </div>
+            <p className={styles.benchmarkHint}>
+              Separate Sol Medium request via {useOpenRouterBaseline ? "OpenRouter" : "OpenAI"}.
+              Sends one image: {toothReferenceName ? toothReferenceLabel : "none available"}, with its scanbody outlines.
+            </p>
+            <div className={styles.selectorGrid}>
+              <label>
+                <span>Image showing the teeth</span>
+                <select value={toothViewChoice} disabled={Boolean(busyLabel)} onChange={(event) => {
+                  setToothViewChoice(event.currentTarget.value as ToothViewChoice);
+                  setToothRightSideHint("unknown");
+                  setToothNumbers(null);
+                }}>
+                  <option value="auto">Auto — more scanbodies visible</option>
+                  <option value="top">Top image</option>
+                  <option value="bottom">Bottom image</option>
+                </select>
+              </label>
+              <label>
+                <span>Jaw (optional hint)</span>
+                <select value={toothJawHint} disabled={Boolean(busyLabel)} onChange={(event) => {
+                  setToothJawHint(event.currentTarget.value as JawHint);
+                  setToothNumbers(null);
+                }}>
+                  <option value="auto">Let AI estimate</option>
+                  <option value="upper">Upper jaw</option>
+                  <option value="lower">Lower jaw</option>
+                </select>
+              </label>
+              <label>
+                <span>Patient right in selected image</span>
+                <select value={toothRightSideHint} disabled={Boolean(busyLabel)} onChange={(event) => {
+                  setToothRightSideHint(event.currentTarget.value as RightSideHint);
+                  setToothNumbers(null);
+                }}>
+                  <option value="unknown">Unknown</option>
+                  <option value="image-left">Image left</option>
+                  <option value="image-right">Image right</option>
+                </select>
+              </label>
+            </div>
+            <button className={styles.secondaryButton} type="button"
+              disabled={!toothReferenceName}
+              onClick={() => toothReferenceName && setPreviewViewName(toothReferenceName)}>
+              <Eye size={16} /> Preview {toothReferenceName ? toothReferenceLabel : "image"}
+            </button>
+            <p className={styles.benchmarkHint}>Auto uses existing detections. Check the preview and switch views if needed.</p>
+            <button className={styles.comparisonButton} type="button"
+              onClick={() => void estimateToothNumbers()}
+              disabled={Boolean(busyLabel) || !hasToothTargets}>
+              {busyLabel === "Estimating tooth numbers"
+                ? <LoaderCircle className={styles.spin} size={17} /> : <Hash size={17} />}
+              Estimate tooth numbers
+            </button>
+            {!hasToothTargets ? <p className={styles.benchmarkHint}>Choose a view with detected scanbodies, or run segmentation first.</p> : null}
+            {toothNumbers ? (
+              <div className={styles.toothNumberResult} role="status">
+                <strong>Estimated scanbody tooth positions</strong>
+                {toothFdiNumbers.length > 0 ? (
+                  <div className={styles.toothNumberList}>
+                    {toothFdiNumbers.map((number) => <span key={number}>{number}</span>)}
+                  </div>
+                ) : <p>No reliable tooth numbers returned.</p>}
+                {toothNumbers.notes ? <p>{toothNumbers.notes}</p> : null}
+                {uncertainToothReasons.length > 0 ? (
+                  <details>
+                    <summary>Some positions are uncertain</summary>
+                    {uncertainToothReasons.map((reason) => <p key={reason}>{reason}</p>)}
+                  </details>
+                ) : null}
+                <p>{toothNumbers.meta.modelLabel}</p>
+                <div className={styles.runCostLine}>
+                  <span>{(toothNumbers.meta.elapsedMs / 1000).toFixed(1)} seconds</span>
+                  <span>{formatEstimatedCost(toothNumbers.meta.estimatedCostUsd)}</span>
+                </div>
+              </div>
+            ) : null}
           </section>
 
           <section className={styles.panelSection}>

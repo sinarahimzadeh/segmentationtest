@@ -103,9 +103,12 @@ function resolveModelSelection(run: z.infer<typeof requestSchema>["run"]): {
 }
 
 const DEFAULT_OUTLINE_POINTS_PER_SCANBODY = 40;
+const DEFAULT_MIN_OUTLINE_POINTS_PER_SCANBODY = 16;
 const MAX_OUTLINE_POINTS_PER_SCANBODY = 10_000;
+type OutlinePointRange = { min: number; max: number };
 
-function getOutlinePointCount() {
+function getOutlinePointRange(): OutlinePointRange {
+  // The existing setting is now the maximum, rather than a mandatory count.
   const pointCount = Number(
     process.env.SCANBODY_OUTLINE_POINTS ??
       DEFAULT_OUTLINE_POINTS_PER_SCANBODY,
@@ -121,10 +124,25 @@ function getOutlinePointCount() {
     );
   }
 
-  return pointCount;
+  const minimum = Number(
+    process.env.SCANBODY_OUTLINE_MIN_POINTS ??
+      Math.min(DEFAULT_MIN_OUTLINE_POINTS_PER_SCANBODY, pointCount),
+  );
+  if (!Number.isInteger(minimum) || minimum < 3 || minimum > pointCount) {
+    throw new Error(
+      "SCANBODY_OUTLINE_MIN_POINTS must be a whole number from 3 to SCANBODY_OUTLINE_POINTS.",
+    );
+  }
+  return { min: minimum, max: pointCount };
 }
 
-function createDetectionSchema(pointCount: number) {
+function outlinePointInstruction(range: OutlinePointRange) {
+  return range.min === range.max
+    ? `exactly ${range.max}`
+    : `between ${range.min} and ${range.max}`;
+}
+
+function createDetectionSchema(range: OutlinePointRange) {
   return z.object({
     views: z.array(
       z.object({
@@ -140,7 +158,7 @@ function createDetectionSchema(pointCount: number) {
             // One compact string avoids repeating the JSON keys "x" and "y"
             // for every point. The app parses it back into normal coordinates.
             outline: z.string().describe(
-              `Exactly ${pointCount} ordered integer pixel pairs tracing the visible boundary, formatted only as "x,y x,y x,y".`,
+              `Use ${outlinePointInstruction(range)} ordered integer pixel pairs tracing the visible boundary.${range.min < range.max ? " Choose the count separately for each outline, using fewer for simple shapes and more for detailed shapes." : ""} Format only as "x,y x,y x,y".`,
             ),
             confidence: z
               .number()
@@ -165,7 +183,7 @@ function parseCompactOutline(value: string) {
   });
 }
 
-function createSystemPrompt(pointCount: number) {
+function createSystemPrompt(range: OutlinePointRange) {
   return `You inspect monochrome renders of dental intraoral STL meshes.
 Your only task is to locate implant scanbodies as regions of interest.
 
@@ -193,8 +211,15 @@ empty.
 
 The images are different camera views of the same mesh. Some images can show
 the underside, where no scanbody is visible. Treat every view independently.
-For every visible scanbody, trace its visible outer boundary with exactly
-${pointCount} ordered whole-pixel points. Put all points into the single outline
+For every visible scanbody, trace its visible outer boundary using
+${outlinePointInstruction(range)} ordered whole-pixel points.${range.min < range.max ? `
+Choose the number
+separately for each scanbody in each view. Use the fewest points that follow
+the actual boundary closely. Simple silhouettes need fewer points; detailed
+silhouettes need more. Preserve curves, flat sides, corners, steps, and notches,
+placing more points where the boundary changes direction. Use up to ${range.max}
+points when needed for detail; do not pad a simple outline to the maximum count.` : ""}
+Put all points into the single outline
 string using only this compact format: "430,250 438,229 455,215". Do not put
 brackets, x/y keys, semicolons, or explanations inside the string. Follow the
 real shape closely, including flat sides and corners. Do not repeat the first
@@ -209,8 +234,8 @@ present. Never invent a detection when no manufactured post is visible.`;
 export async function POST(request: Request) {
   try {
     const body = requestSchema.parse(await request.json());
-    const outlinePointCount = getOutlinePointCount();
-    const detectionSchema = createDetectionSchema(outlinePointCount);
+    const outlinePointRange = getOutlinePointRange();
+    const detectionSchema = createDetectionSchema(outlinePointRange);
     const selection = resolveModelSelection(body.run);
     // Honor the baseline provider toggle even if that provider's key fails.
     const allowOpenRouterFallback = body.run.type === "comparison" && Boolean(process.env.OPENROUTER_API_KEY);
@@ -251,8 +276,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const imageInstruction = `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing exactly ${outlinePointCount} ordered whole-number pixel pairs in "x,y x,y" format.`;
-    const systemPrompt = createSystemPrompt(outlinePointCount);
+    const imageInstruction = `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing ${outlinePointInstruction(outlinePointRange)} ordered whole-number pixel pairs in "x,y x,y" format.${outlinePointRange.min < outlinePointRange.max ? " Choose the fewest points needed to follow each scanbody's actual boundary closely." : ""}`;
+    const systemPrompt = createSystemPrompt(outlinePointRange);
     type RawDetection = z.infer<typeof detectionSchema>["views"][number]["detections"][number];
     async function analyzeBatch(batchViews: typeof body.views): Promise<ViewBatchResult<RawDetection>> {
       // Every concurrent request needs its own client and mutable billing receipt.
@@ -551,7 +576,10 @@ export async function POST(request: Request) {
         ...(selection.provider === "openrouter" ? { serviceTier, reportedCostUsd } : {}),
         parallelViews: body.parallelViews,
         viewRequestCount,
-        outlinePointsPerScanbody: outlinePointCount,
+        // Keep the old field as the configured ceiling for existing consumers.
+        outlinePointsPerScanbody: outlinePointRange.max,
+        outlineMinPointsPerScanbody: outlinePointRange.min,
+        outlineMaxPointsPerScanbody: outlinePointRange.max,
         elapsedMs,
         inputTokens,
         cachedInputTokens,

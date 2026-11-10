@@ -25,6 +25,8 @@ export type AnalysisResult = {
     integration?: "langchain" | "anthropic-sdk";
     reasoningEffort: ReasoningEffort;
     processingSpeed?: ProcessingSpeed;
+    parallelViews?: boolean;
+    viewRequestCount?: number;
     serviceTier?: string | null;
     reportedCostUsd?: number | null;
     elapsedMs: number;

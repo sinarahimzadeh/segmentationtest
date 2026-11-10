@@ -39,10 +39,24 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Model benchmark
 
-1. Choose an STL and run the fixed **GPT-6.1 Sol / Medium** baseline.
+1. Choose an STL and run the fixed **GPT-6.1 Sol / Medium** baseline. The
+   **Use OpenRouter for Sol Medium** toggle is on by default; turn it off to
+   use OpenAI directly. Changing the toggle applies to the next baseline run.
 2. Select a model and thinking level. Grok 4.7, 4.6, and 4.3 use your xAI API key.
 3. Run the comparison. The app compares the final 3D triangle IDs, not just
    the 2D outlines.
+
+**Parallel baseline views** and **Parallel comparison views** are independent
+toggles, both on by default. The comparison toggle is beside **Run and compare**.
+Parallel mode sends all eight views as eight concurrent requests using the selected model,
+thinking level, speed, image quality, and outline settings. Turn it off to use
+the original single request with all eight images. Parallel mode repeats the
+prompt in every request, so cost and results can differ; an eightfold speedup
+is not guaranteed. Time is the elapsed time of the complete run, while token
+usage and cost are summed across all requests. Saved labels and comparison
+filenames include `Parallel`, and metadata records `parallelViews` and
+`viewRequestCount`. A failed view prevents a partial result from being saved;
+completed calls can still be charged. No automatic grouped retry is made.
 
 The app saves baseline and comparison runs as normal JSON files under
 `benchmark-output/<STL SHA-256>/`. Each file contains the returned outline JSON,

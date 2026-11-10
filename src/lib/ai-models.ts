@@ -401,10 +401,13 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
   },
 ];
 
-export const BASELINE_SELECTION = {
-  model: "gpt-6.1-sol" as const,
-  reasoningEffort: "medium" as const,
-};
+// Both baseline providers use the same Sol version and Medium thinking level.
+export function getBaselineSelection(useOpenRouter = true) {
+  return {
+    model: useOpenRouter ? "openrouter-gpt-6.1-sol" as const : "gpt-6.1-sol" as const,
+    reasoningEffort: "medium" as const,
+  };
+}
 
 export function getAiModelOption(modelId: AiModelId) {
   const option = AI_MODEL_OPTIONS.find((item) => item.id === modelId);

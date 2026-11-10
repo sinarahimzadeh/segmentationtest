@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:speed": "node --test scripts/openrouter-speed.test.mjs"
+    "test:speed": "node --test scripts/openrouter-speed.test.mjs",
+    "test:parallel": "node --test scripts/parallel-view-analysis.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.129.0",

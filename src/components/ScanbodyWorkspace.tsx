@@ -35,7 +35,7 @@ import {
 } from "@/lib/benchmark";
 import {
   AI_MODEL_OPTIONS,
-  BASELINE_SELECTION,
+  getBaselineSelection,
   PROCESSING_SPEEDS,
   getAiModelOption,
   getProcessingSpeeds,
@@ -170,6 +170,9 @@ export default function ScanbodyWorkspace() {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveResultFiles, setSaveResultFiles] = useState(true);
+  const [useOpenRouterBaseline, setUseOpenRouterBaseline] = useState(true);
+  const [baselineParallelViews, setBaselineParallelViews] = useState(true);
+  const [comparisonParallelViews, setComparisonParallelViews] = useState(true);
   const [directClaude, setDirectClaude] = useState(false);
   const [previewViewName, setPreviewViewName] = useState<string | null>(null);
   const [folderStlChoices, setFolderStlChoices] = useState<FolderStlChoice[]>([]);
@@ -474,6 +477,8 @@ export default function ScanbodyWorkspace() {
           // This controls both benchmark files and the temporary raw-response
           // JSON. Detection and in-memory comparison still work when it is off.
           saveFiles: saveResultFiles,
+          // Each section controls its own request mode independently.
+          parallelViews: runKind === "baseline" ? baselineParallelViews : comparisonParallelViews,
           // The toggle changes only Claude comparisons; the baseline stays Sol.
           directClaude:
             runKind === "comparison" &&
@@ -481,7 +486,7 @@ export default function ScanbodyWorkspace() {
             directClaude,
           run:
             runKind === "baseline"
-              ? { type: "baseline" }
+              ? { type: "baseline", useOpenRouter: useOpenRouterBaseline }
               : {
                   type: "comparison",
                   model: comparisonModel,
@@ -514,11 +519,13 @@ export default function ScanbodyWorkspace() {
       }
 
       if (!modelInfo) return;
+      // Use the same provider selection as the API when labeling saved files.
+      const baselineSelection = getBaselineSelection(useOpenRouterBaseline);
       const runModel =
-        runKind === "baseline" ? BASELINE_SELECTION.model : comparisonModel;
+        runKind === "baseline" ? baselineSelection.model : comparisonModel;
       const runEffort =
         runKind === "baseline"
-          ? BASELINE_SELECTION.reasoningEffort
+          ? baselineSelection.reasoningEffort
           : comparisonEffort;
       const metrics =
         runKind === "comparison" && baselineRun
@@ -603,15 +610,18 @@ export default function ScanbodyWorkspace() {
       setBusyLabel(null);
     }
   }, [
+    baselineParallelViews,
     baselineRun,
     capturedViews,
     comparisonEffort,
     comparisonModel,
+    comparisonParallelViews,
     comparisonSpeed,
     directClaude,
     mapAnalysisToTriangles,
     modelInfo,
     saveResultFiles,
+    useOpenRouterBaseline,
   ]);
 
   const showSavedRun = useCallback((run: SavedBenchmarkRun) => {
@@ -820,6 +830,39 @@ export default function ScanbodyWorkspace() {
                 <span />
               </span>
             </label>
+            {/* This switch changes only the next baseline run. */}
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Parallel baseline views</strong>
+                <small>On: one request per view · Off: all views together</small>
+                <small>Separate requests can change cost and results.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={baselineParallelViews}
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => setBaselineParallelViews(event.currentTarget.checked)}
+              />
+              <span className={styles.toggleTrack} aria-hidden="true">
+                <span />
+              </span>
+            </label>
+            {/* Provider changes apply to the next baseline; saved results stay loaded. */}
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Use OpenRouter for Sol Medium</strong>
+                <small>On: OpenRouter · Off: OpenAI</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={useOpenRouterBaseline}
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => setUseOpenRouterBaseline(event.currentTarget.checked)}
+              />
+              <span className={styles.toggleTrack} aria-hidden="true">
+                <span />
+              </span>
+            </label>
             <button
               className={styles.analyzeButton}
               type="button"
@@ -837,7 +880,7 @@ export default function ScanbodyWorkspace() {
             {baselineRun ? (
               <div className={styles.baselineCard}>
                 <div className={styles.savedRunHeading}>
-                  <span><CheckCircle2 size={14} />Baseline ready</span>
+                  <span><CheckCircle2 size={14} />Baseline ready · {baselineRun.analysis.meta.provider === "openrouter" ? "OpenRouter" : "OpenAI"}</span>
                   <button type="button" onClick={() => showSavedRun(baselineRun)}>
                     Show
                   </button>
@@ -986,6 +1029,23 @@ export default function ScanbodyWorkspace() {
                 </span>
               </label>
             ) : null}
+            {/* Comparison mode is independent of the baseline switch above. */}
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Parallel comparison views</strong>
+                <small>On: one request per view · Off: all views together</small>
+                <small>Separate requests can change cost and results.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={comparisonParallelViews}
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => setComparisonParallelViews(event.currentTarget.checked)}
+              />
+              <span className={styles.toggleTrack} aria-hidden="true">
+                <span />
+              </span>
+            </label>
             <button
               className={styles.comparisonButton}
               type="button"

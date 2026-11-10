@@ -9,11 +9,12 @@ import { z } from "zod";
 import { analyzeClaudeDirect } from "@/lib/direct-claude";
 import { MistralChatModel } from "@/lib/mistral-chat";
 import { ScanbodyChatXAI } from "@/lib/xai-chat";
+import { analyzeViewBatches, type ViewBatchResult } from "@/lib/parallel-view-analysis";
 import { createOpenRouterReceiptFetch, getOpenRouterSpeedRouting, type OpenRouterReceipt } from "@/lib/openrouter-speed";
 import {
   AI_MODEL_IDS,
   PROCESSING_SPEEDS,
-  BASELINE_SELECTION,
+  getBaselineSelection,
   estimatePaidCostUsd,
   getAiModelOption,
   getModelRunLabel,
@@ -44,10 +45,15 @@ type MistralEffort = Extract<ReasoningEffort, "none" | "low" | "medium" | "high"
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
   saveFiles: z.boolean().optional().default(true),
+  // Older clients keep grouped requests unless they explicitly opt in.
+  parallelViews: z.boolean().default(false),
   // Only Claude comparisons may opt out of LangChain. Default preserves old runs.
   directClaude: z.boolean().optional().default(false),
   run: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("baseline") }),
+    z.object({
+      type: z.literal("baseline"),
+      useOpenRouter: z.boolean().default(true),
+    }),
     z.object({
       type: z.literal("comparison"),
       model: z.enum(AI_MODEL_IDS),
@@ -73,10 +79,11 @@ function resolveModelSelection(run: z.infer<typeof requestSchema>["run"]): {
   processingSpeed: ProcessingSpeed;
 } {
   if (run.type === "baseline") {
+    const baseline = getBaselineSelection(run.useOpenRouter);
     return {
-      ...BASELINE_SELECTION,
+      ...baseline,
       processingSpeed: "standard",
-      provider: getAiModelOption(BASELINE_SELECTION.model).provider,
+      provider: getAiModelOption(baseline.model).provider,
     };
   }
   if (!isAllowedComparisonSelection(run.model, run.reasoningEffort)) {
@@ -205,14 +212,17 @@ export async function POST(request: Request) {
     const outlinePointCount = getOutlinePointCount();
     const detectionSchema = createDetectionSchema(outlinePointCount);
     const selection = resolveModelSelection(body.run);
+    // Honor the baseline provider toggle even if that provider's key fails.
+    const allowOpenRouterFallback = body.run.type === "comparison" && Boolean(process.env.OPENROUTER_API_KEY);
     const directClaude = body.directClaude && selection.provider === "anthropic";
     const isOpenRouterOpenAi = selection.provider === "openrouter" &&
       getAiModelOption(selection.model).apiModelName?.startsWith("openai/");
-    const openRouterReceipt: OpenRouterReceipt = { serviceTier: null, reportedCostUsd: null };
 
-    if (selection.provider === "openai" && !process.env.OPENAI_API_KEY && !process.env.OPENROUTER_API_KEY) {
+    if (selection.provider === "openai" && !process.env.OPENAI_API_KEY && !allowOpenRouterFallback) {
       throw new Error(
-        "OPENAI_API_KEY or OPENROUTER_API_KEY is missing. Add it to .env.local and restart the server.",
+        body.run.type === "baseline"
+          ? "OPENAI_API_KEY is missing. Add it to .env.local or enable OpenRouter for the baseline."
+          : "OPENAI_API_KEY or OPENROUTER_API_KEY is missing. Add it to .env.local and restart the server.",
       );
     }
     if (selection.provider === "google" && !process.env.GOOGLE_API_KEY) {
@@ -241,11 +251,194 @@ export async function POST(request: Request) {
       );
     }
 
-    const detector = directClaude || selection.provider === "xai"
-      ? null
-      : selection.provider === "openai"
-        ? (!process.env.OPENAI_API_KEY && process.env.OPENROUTER_API_KEY
-            ? new ChatOpenAI({
+    const imageInstruction = `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing exactly ${outlinePointCount} ordered whole-number pixel pairs in "x,y x,y" format.`;
+    const systemPrompt = createSystemPrompt(outlinePointCount);
+    type RawDetection = z.infer<typeof detectionSchema>["views"][number]["detections"][number];
+    async function analyzeBatch(batchViews: typeof body.views): Promise<ViewBatchResult<RawDetection>> {
+      // Every concurrent request needs its own client and mutable billing receipt.
+      const openRouterReceipt: OpenRouterReceipt = { serviceTier: null, reportedCostUsd: null };
+      const detector = directClaude || selection.provider === "xai"
+        ? null
+        : selection.provider === "openai"
+          ? (!process.env.OPENAI_API_KEY && allowOpenRouterFallback
+              ? new ChatOpenAI({
+                  model: `openai/${selection.model}`,
+                  apiKey: process.env.OPENROUTER_API_KEY,
+                  maxRetries: 1,
+                  configuration: {
+                    baseURL: "https://openrouter.ai/api/v1",
+                  },
+                  modelKwargs: {
+                    ...(selection.reasoningEffort !== "default"
+                      ? { reasoning: { effort: selection.reasoningEffort } }
+                      : {}),
+                  },
+                })
+              : new ChatOpenAI({
+                  model: selection.model,
+                  apiKey: process.env.OPENAI_API_KEY,
+                  maxRetries: 1,
+                  useResponsesApi: true,
+                  reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
+                })
+            ).withStructuredOutput(detectionSchema, {
+              name: "scanbody_roi_detection",
+              strict: Boolean(process.env.OPENAI_API_KEY),
+              includeRaw: true,
+            })
+          : selection.provider === "google"
+            ? new CurrentGeminiChatModel({
+                model: selection.model,
+                apiKey: process.env.GOOGLE_API_KEY,
+                maxRetries: 1,
+                maxOutputTokens: 65_536,
+                thinkingConfig: {
+                  // The installed LangChain type has not yet added MINIMAL, but the
+                  // current Gemini API supports it for Flash-Lite.
+                  thinkingLevel: selection.reasoningEffort.toUpperCase() as
+                    | "LOW"
+                    | "MEDIUM"
+                    | "HIGH",
+                },
+              }).withStructuredOutput(detectionSchema, {
+                name: "scanbody_roi_detection",
+                includeRaw: true,
+              })
+            : selection.provider === "mistral"
+              ? new MistralChatModel({
+                  model: selection.model,
+                  apiKey: process.env.MISTRAL_API_KEY,
+                  maxRetries: 1,
+                  // Large 3 uses its default behavior, so omit reasoning_effort.
+                  reasoningEffort:
+                    selection.reasoningEffort === "default"
+                      ? undefined
+                      : (selection.reasoningEffort as MistralEffort),
+                }).withStructuredOutput(detectionSchema, {
+                  name: "scanbody_roi_detection",
+                  includeRaw: true,
+                })
+              : selection.provider === "openrouter"
+                ? new ChatOpenAI({
+                    model:
+                      getAiModelOption(selection.model).apiModelName ??
+                      selection.model,
+                    apiKey: process.env.OPENROUTER_API_KEY,
+                    // A tier mismatch must not trigger another potentially paid call.
+                    maxRetries: selection.processingSpeed === "standard" ? 1 : 0,
+                    configuration: {
+                      baseURL: "https://openrouter.ai/api/v1",
+                      fetch: createOpenRouterReceiptFetch(openRouterReceipt, isOpenRouterOpenAi ? selection.processingSpeed : undefined),
+                    },
+                    modelKwargs: {
+                      ...(isOpenRouterOpenAi ? getOpenRouterSpeedRouting(selection.processingSpeed) : {}),
+                      ...(selection.reasoningEffort !== "default"
+                        ? { reasoning: { effort: selection.reasoningEffort } }
+                        : {}),
+                    },
+                  }).withStructuredOutput(detectionSchema, {
+                    name: "scanbody_roi_detection",
+                    includeRaw: true,
+                  })
+                : new ChatAnthropic({
+                // Provider validation above guarantees this branch only receives
+                // a selectable Claude ID from the shared model whitelist.
+                model: selection.model as ClaudeModelId,
+                apiKey: process.env.ANTHROPIC_API_KEY,
+                maxRetries: 1,
+                // Fable 5.1 and the selectable Claude 5.5 models support 128K output.
+                // This is only a ceiling; Anthropic bills tokens actually used.
+                maxTokens: 128_000,
+                // Anthropic's SDK rejects large non-streaming requests before
+                // sending them. LangChain collects this internal stream and the
+                // route still returns one normal final JSON response to the UI.
+                streaming: true,
+                // Fable 5.1 and the Claude 5.5 family use adaptive thinking and
+                // the native effort parameter for Low, Medium, and High.
+                thinking: { type: "adaptive" },
+                outputConfig: {
+                  effort: selection.reasoningEffort as ClaudeEffort,
+                },
+              }).withStructuredOutput(detectionSchema, {
+                name: "scanbody_roi_detection",
+                // Anthropic's native JSON-schema output avoids extra tool-call
+                // wrapper tokens and returns the same parsed shape as other providers.
+                method: "jsonSchema",
+                includeRaw: true,
+              });
+
+      let parsed: z.infer<typeof detectionSchema>;
+      let inputTokens: number | null;
+      let cachedInputTokens: number | null;
+      let outputTokens: number | null;
+      if (directClaude) {
+        // Direct SDK branch uses the same prompt and the requested view batch.
+        const result = await analyzeClaudeDirect({
+          apiKey: process.env.ANTHROPIC_API_KEY!,
+          model: selection.model as ClaudeModelId,
+          effort: selection.reasoningEffort as ClaudeEffort,
+          systemPrompt,
+          imageInstruction,
+          views: batchViews,
+          detectionSchema,
+        });
+        parsed = result.parsed;
+        inputTokens = result.inputTokens;
+        cachedInputTokens = result.cachedInputTokens;
+        outputTokens = result.outputTokens;
+      } else {
+        const content: HumanMessage["content"] = [
+          { type: "text", text: imageInstruction },
+        ];
+        for (const view of batchViews) {
+          content.push({ type: "text", text: `VIEW_ID: ${view.name}` });
+          content.push({
+            type: "image_url",
+            image_url: { url: view.image, detail: "high" },
+          });
+        }
+        const messages = [
+          new SystemMessage(systemPrompt),
+          new HumanMessage({ content }),
+        ];
+        if (selection.provider === "xai") {
+          // LangChain's xAI Responses model carries this view batch. Ask xAI for
+          // native JSON Schema output, then validate the returned JSON locally.
+          const grok = new ScanbodyChatXAI({
+            model: selection.model,
+            apiKey: process.env.XAI_API_KEY,
+            reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
+            store: false,
+          });
+          const format = {
+            type: "json_schema" as const,
+            name: "scanbody_roi_detection",
+            schema: z.toJSONSchema(detectionSchema),
+            strict: true,
+          };
+          const result = await grok.invoke(messages, { text: { format } });
+          if (typeof result.content !== "string") {
+            throw new Error("Grok returned an unexpected response format.");
+          }
+          parsed = detectionSchema.parse(JSON.parse(result.content));
+          inputTokens = result.usage_metadata?.input_tokens ?? null;
+          cachedInputTokens = result.usage_metadata?.input_token_details?.cache_read ?? null;
+          outputTokens = result.usage_metadata?.output_tokens ?? null;
+        } else {
+          let result: {
+            parsed: z.infer<typeof detectionSchema>;
+            raw: unknown;
+          };
+          try {
+            result = await detector!.invoke(messages);
+          } catch (detectorError) {
+            const isQuotaOrAuthError =
+              selection.provider === "openai" &&
+              allowOpenRouterFallback &&
+              detectorError instanceof Error &&
+              /quota|credit|insufficient|billing|429|402|401/i.test(detectorError.message);
+            if (isQuotaOrAuthError) {
+              const fallbackOpenRouterDetector = new ChatOpenAI({
                 model: `openai/${selection.model}`,
                 apiKey: process.env.OPENROUTER_API_KEY,
                 maxRetries: 1,
@@ -257,215 +450,57 @@ export async function POST(request: Request) {
                     ? { reasoning: { effort: selection.reasoningEffort } }
                     : {}),
                 },
-              })
-            : new ChatOpenAI({
-                model: selection.model,
-                apiKey: process.env.OPENAI_API_KEY,
-                maxRetries: 1,
-                useResponsesApi: true,
-                reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
-              })
-          ).withStructuredOutput(detectionSchema, {
-            name: "scanbody_roi_detection",
-            strict: Boolean(process.env.OPENAI_API_KEY),
-            includeRaw: true,
-          })
-        : selection.provider === "google"
-          ? new CurrentGeminiChatModel({
-              model: selection.model,
-              apiKey: process.env.GOOGLE_API_KEY,
-              maxRetries: 1,
-              maxOutputTokens: 65_536,
-              thinkingConfig: {
-                // The installed LangChain type has not yet added MINIMAL, but the
-                // current Gemini API supports it for Flash-Lite.
-                thinkingLevel: selection.reasoningEffort.toUpperCase() as
-                  | "LOW"
-                  | "MEDIUM"
-                  | "HIGH",
-              },
-            }).withStructuredOutput(detectionSchema, {
-              name: "scanbody_roi_detection",
-              includeRaw: true,
-            })
-          : selection.provider === "mistral"
-            ? new MistralChatModel({
-                model: selection.model,
-                apiKey: process.env.MISTRAL_API_KEY,
-                maxRetries: 1,
-                // Large 3 uses its default behavior, so omit reasoning_effort.
-                reasoningEffort:
-                  selection.reasoningEffort === "default"
-                    ? undefined
-                    : (selection.reasoningEffort as MistralEffort),
               }).withStructuredOutput(detectionSchema, {
                 name: "scanbody_roi_detection",
                 includeRaw: true,
-              })
-            : selection.provider === "openrouter"
-              ? new ChatOpenAI({
-                  model:
-                    getAiModelOption(selection.model).apiModelName ??
-                    selection.model,
-                  apiKey: process.env.OPENROUTER_API_KEY,
-                  // A tier mismatch must not trigger another potentially paid call.
-                  maxRetries: selection.processingSpeed === "standard" ? 1 : 0,
-                  configuration: {
-                    baseURL: "https://openrouter.ai/api/v1",
-                    fetch: createOpenRouterReceiptFetch(openRouterReceipt, isOpenRouterOpenAi ? selection.processingSpeed : undefined),
-                  },
-                  modelKwargs: {
-                    ...(isOpenRouterOpenAi ? getOpenRouterSpeedRouting(selection.processingSpeed) : {}),
-                    ...(selection.reasoningEffort !== "default"
-                      ? { reasoning: { effort: selection.reasoningEffort } }
-                      : {}),
-                  },
-                }).withStructuredOutput(detectionSchema, {
-                  name: "scanbody_roi_detection",
-                  includeRaw: true,
-                })
-              : new ChatAnthropic({
-              // Provider validation above guarantees this branch only receives
-              // a selectable Claude ID from the shared model whitelist.
-              model: selection.model as ClaudeModelId,
-              apiKey: process.env.ANTHROPIC_API_KEY,
-              maxRetries: 1,
-              // Fable 5.1 and the selectable Claude 5.5 models support 128K output.
-              // This is only a ceiling; Anthropic bills tokens actually used.
-              maxTokens: 128_000,
-              // Anthropic's SDK rejects large non-streaming requests before
-              // sending them. LangChain collects this internal stream and the
-              // route still returns one normal final JSON response to the UI.
-              streaming: true,
-              // Fable 5.1 and the Claude 5.5 family use adaptive thinking and
-              // the native effort parameter for Low, Medium, and High.
-              thinking: { type: "adaptive" },
-              outputConfig: {
-                effort: selection.reasoningEffort as ClaudeEffort,
-              },
-            }).withStructuredOutput(detectionSchema, {
-              name: "scanbody_roi_detection",
-              // Anthropic's native JSON-schema output avoids extra tool-call
-              // wrapper tokens and returns the same parsed shape as other providers.
-              method: "jsonSchema",
-              includeRaw: true,
-            });
-
-    const imageInstruction = `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing exactly ${outlinePointCount} ordered whole-number pixel pairs in "x,y x,y" format.`;
-    const systemPrompt = createSystemPrompt(outlinePointCount);
-    const startedAt = performance.now();
-    let parsed: z.infer<typeof detectionSchema>;
-    let inputTokens: number | null;
-    let cachedInputTokens: number | null;
-    let outputTokens: number | null;
-    if (directClaude) {
-      // Direct SDK branch: no LangChain call, with the same prompt and 8 images.
-      const result = await analyzeClaudeDirect({
-        apiKey: process.env.ANTHROPIC_API_KEY!,
-        model: selection.model as ClaudeModelId,
-        effort: selection.reasoningEffort as ClaudeEffort,
-        systemPrompt,
-        imageInstruction,
-        views: body.views,
-        detectionSchema,
-      });
-      parsed = result.parsed;
-      inputTokens = result.inputTokens;
-      cachedInputTokens = result.cachedInputTokens;
-      outputTokens = result.outputTokens;
-    } else {
-      const content: HumanMessage["content"] = [
-        { type: "text", text: imageInstruction },
-      ];
-      for (const view of body.views) {
-        content.push({ type: "text", text: `VIEW_ID: ${view.name}` });
-        content.push({
-          type: "image_url",
-          image_url: { url: view.image, detail: "high" },
-        });
-      }
-      const messages = [
-        new SystemMessage(systemPrompt),
-        new HumanMessage({ content }),
-      ];
-      if (selection.provider === "xai") {
-        // LangChain's xAI Responses model carries all eight images. Ask xAI for
-        // native JSON Schema output, then validate the returned JSON locally.
-        const grok = new ScanbodyChatXAI({
-          model: selection.model,
-          apiKey: process.env.XAI_API_KEY,
-          reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
-          store: false,
-        });
-        const format = {
-          type: "json_schema" as const,
-          name: "scanbody_roi_detection",
-          schema: z.toJSONSchema(detectionSchema),
-          strict: true,
-        };
-        const result = await grok.invoke(messages, { text: { format } });
-        if (typeof result.content !== "string") {
-          throw new Error("Grok returned an unexpected response format.");
-        }
-        parsed = detectionSchema.parse(JSON.parse(result.content));
-        inputTokens = result.usage_metadata?.input_tokens ?? null;
-        cachedInputTokens = result.usage_metadata?.input_token_details?.cache_read ?? null;
-        outputTokens = result.usage_metadata?.output_tokens ?? null;
-      } else {
-        let result: {
-          parsed: z.infer<typeof detectionSchema>;
-          raw: unknown;
-        };
-        try {
-          result = await detector!.invoke(messages);
-        } catch (detectorError) {
-          const isQuotaOrAuthError =
-            selection.provider === "openai" &&
-            Boolean(process.env.OPENROUTER_API_KEY) &&
-            detectorError instanceof Error &&
-            /quota|credit|insufficient|billing|429|402|401/i.test(detectorError.message);
-          if (isQuotaOrAuthError) {
-            const fallbackOpenRouterDetector = new ChatOpenAI({
-              model: `openai/${selection.model}`,
-              apiKey: process.env.OPENROUTER_API_KEY,
-              maxRetries: 1,
-              configuration: {
-                baseURL: "https://openrouter.ai/api/v1",
-              },
-              modelKwargs: {
-                ...(selection.reasoningEffort !== "default"
-                  ? { reasoning: { effort: selection.reasoningEffort } }
-                  : {}),
-              },
-            }).withStructuredOutput(detectionSchema, {
-              name: "scanbody_roi_detection",
-              includeRaw: true,
-            });
-            result = await fallbackOpenRouterDetector.invoke(messages);
-          } else {
-            throw detectorError;
+              });
+              result = await fallbackOpenRouterDetector.invoke(messages);
+            } else {
+              throw detectorError;
+            }
           }
+          parsed = result.parsed;
+          const usage = (
+            result.raw as {
+              usage_metadata?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                input_token_details?: { cache_read?: number };
+              };
+            }
+          ).usage_metadata;
+          inputTokens = usage?.input_tokens ?? null;
+          cachedInputTokens = usage?.input_token_details?.cache_read ?? null;
+          outputTokens = usage?.output_tokens ?? null;
         }
-        parsed = result.parsed;
-        const usage = (
-          result.raw as {
-            usage_metadata?: {
-              input_tokens?: number;
-              output_tokens?: number;
-              input_token_details?: { cache_read?: number };
-            };
-          }
-        ).usage_metadata;
-        inputTokens = usage?.input_tokens ?? null;
-        cachedInputTokens = usage?.input_token_details?.cache_read ?? null;
-        outputTokens = usage?.output_tokens ?? null;
       }
+      return {
+        parsed,
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
+        ...openRouterReceipt,
+        estimatedCostUsd: openRouterReceipt.reportedCostUsd ?? estimatePaidCostUsd({
+          modelId: selection.model,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          processingSpeed: selection.processingSpeed,
+        }),
+      };
     }
+
+    const startedAt = performance.now();
+    const {
+      parsed, inputTokens, cachedInputTokens, outputTokens, estimatedCostUsd,
+      reportedCostUsd, serviceTier, viewRequestCount,
+    } = await analyzeViewBatches(body.views, body.parallelViews, analyzeBatch);
     const elapsedMs = Math.round(performance.now() - startedAt);
 
     // TEMPORARY DEBUG SAVE — REMOVE LATER:
     // This saves the exact structured JSON returned by the LLM, before the app
     // converts the compact outline string into [x, y] arrays or performs 3D cleanup.
+    // In parallel mode it combines the views from all real responses unchanged.
     // To remove this feature later, delete this commented block and the two
     // node:fs/promises / node:path imports at the top of this file.
     if (body.saveFiles) {
@@ -506,26 +541,22 @@ export async function POST(request: Request) {
       views,
       meta: {
         model: selection.model,
-        modelLabel: `${getModelRunLabel(selection.model, selection.reasoningEffort, selection.processingSpeed)}${directClaude ? " · Direct API" : ""}`,
+        modelLabel: `${getModelRunLabel(selection.model, selection.reasoningEffort, selection.processingSpeed)}${directClaude ? " · Direct API" : ""}${body.parallelViews ? " · Parallel" : ""}`,
         provider: selection.provider,
         ...(selection.provider === "anthropic"
           ? { integration: directClaude ? "anthropic-sdk" : "langchain" }
           : {}),
         reasoningEffort: selection.reasoningEffort,
         ...(isOpenRouterOpenAi ? { processingSpeed: selection.processingSpeed } : {}),
-        ...(selection.provider === "openrouter" ? openRouterReceipt : {}),
+        ...(selection.provider === "openrouter" ? { serviceTier, reportedCostUsd } : {}),
+        parallelViews: body.parallelViews,
+        viewRequestCount,
         outlinePointsPerScanbody: outlinePointCount,
         elapsedMs,
         inputTokens,
         cachedInputTokens,
         outputTokens,
-        estimatedCostUsd: openRouterReceipt.reportedCostUsd ?? estimatePaidCostUsd({
-          modelId: selection.model,
-          inputTokens,
-          cachedInputTokens,
-          outputTokens,
-          processingSpeed: selection.processingSpeed,
-        }),
+        estimatedCostUsd,
         // Show OpenRouter's reported cost or the calculated paid cost. Keep this legacy
         // field only so old saved JSON files remain compatible.
         freeTierEligible: false,

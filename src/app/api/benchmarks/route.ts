@@ -26,6 +26,8 @@ const analysisSchema = z.object({
     integration: z.enum(["langchain", "anthropic-sdk"]).optional(),
     reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
     processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
+    parallelViews: z.boolean().optional(),
+    viewRequestCount: z.number().int().positive().optional(),
     serviceTier: z.string().nullable().optional(),
     reportedCostUsd: z.number().nonnegative().nullable().optional(),
     elapsedMs: z.number(),
@@ -81,7 +83,8 @@ function getMeshDirectory(meshKey: string) {
 function comparisonFileName(run: z.infer<typeof savedRunSchema>) {
   const timestamp = run.createdAt.replace(/[:.]/g, "-");
   const speed = run.processingSpeed ?? run.analysis.meta.processingSpeed ?? "standard";
-  const suffix = speed === "standard" ? "" : `__${speed}`;
+  const suffix = (speed === "standard" ? "" : `__${speed}`) +
+    (run.analysis.meta.parallelViews ? "__parallel" : "");
   return `${timestamp}__${run.model}__${run.reasoningEffort}${suffix}.json`;
 }
 

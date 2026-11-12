@@ -36,14 +36,18 @@ export async function analyzeViewBatches<View extends { name: string }, Detectio
   // Wait for every in-flight call even if one fails. Do not silently save a
   // partial segmentation or automatically send another paid all-images request.
   const settled = await Promise.allSettled(batches.map(async (batch) => {
+    // Independent clocks: each measures its own request, including client setup,
+    // provider/network waiting, retries if configured, and response parsing.
+    const requestStartedAt = performance.now();
     const result = await analyzeBatch(batch);
+    const requestElapsedMs = performance.now() - requestStartedAt;
     if (parallel && (
       result.parsed.views.length !== 1 ||
       result.parsed.views[0].view !== batch[0].name
     )) {
       throw new Error(`The AI did not return exactly the requested VIEW_ID (${batch[0].name}).`);
     }
-    return result;
+    return { ...result, requestElapsedMs };
   }));
   const failures = settled.flatMap((result, index) => result.status === "rejected"
     ? [`${batches[index].map((view) => view.name).join(", ")}: ${
@@ -61,7 +65,7 @@ export async function analyzeViewBatches<View extends { name: string }, Detectio
     );
   }
   // allSettled preserves input order even when the provider finishes out of order.
-  const results = settled.map((result) => (result as PromiseFulfilledResult<ViewBatchResult<Detection>>).value);
+  const results = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   const tiers = new Set(results.map((result) => result.serviceTier));
   return {
     parsed: { views: results.flatMap((result) => result.parsed.views) },
@@ -73,5 +77,10 @@ export async function analyzeViewBatches<View extends { name: string }, Detectio
     reportedCostUsd: sumKnown(results.map((result) => result.reportedCostUsd)),
     serviceTier: tiers.size === 1 ? results[0].serviceTier : "mixed",
     viewRequestCount: batches.length,
+    // A grouped request cannot reveal how long the model spent on each image.
+    // Never divide its elapsed time by the number of images or invent timings.
+    viewTimings: batches.every((batch) => batch.length === 1)
+      ? results.map((result, index) => ({ view: batches[index][0].name, elapsedMs: result.requestElapsedMs }))
+      : null,
   };
 }

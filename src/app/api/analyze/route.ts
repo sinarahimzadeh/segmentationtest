@@ -55,7 +55,8 @@ const requestSchema = z.object({
       useOpenRouter: z.boolean().default(true),
     }),
     z.object({
-      type: z.literal("comparison"),
+      // Standalone runs use the same model settings without requiring a baseline.
+      type: z.enum(["comparison", "standalone"]),
       model: z.enum(AI_MODEL_IDS),
       reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
       processingSpeed: z.enum(PROCESSING_SPEEDS).default("standard"),
@@ -238,7 +239,7 @@ export async function POST(request: Request) {
     const detectionSchema = createDetectionSchema(outlinePointRange);
     const selection = resolveModelSelection(body.run);
     // Honor the baseline provider toggle even if that provider's key fails.
-    const allowOpenRouterFallback = body.run.type === "comparison" && Boolean(process.env.OPENROUTER_API_KEY);
+    const allowOpenRouterFallback = body.run.type !== "baseline" && Boolean(process.env.OPENROUTER_API_KEY);
     const directClaude = body.directClaude && selection.provider === "anthropic";
     const isOpenRouterOpenAi = selection.provider === "openrouter" &&
       getAiModelOption(selection.model).apiModelName?.startsWith("openai/");
@@ -518,7 +519,7 @@ export async function POST(request: Request) {
     const startedAt = performance.now();
     const {
       parsed, inputTokens, cachedInputTokens, outputTokens, estimatedCostUsd,
-      reportedCostUsd, serviceTier, viewRequestCount,
+      reportedCostUsd, serviceTier, viewRequestCount, viewTimings,
     } = await analyzeViewBatches(body.views, body.parallelViews, analyzeBatch);
     const elapsedMs = Math.round(performance.now() - startedAt);
 
@@ -576,6 +577,7 @@ export async function POST(request: Request) {
         ...(selection.provider === "openrouter" ? { serviceTier, reportedCostUsd } : {}),
         parallelViews: body.parallelViews,
         viewRequestCount,
+        viewTimings,
         // Keep the old field as the configured ceiling for existing consumers.
         outlinePointsPerScanbody: outlinePointRange.max,
         outlineMinPointsPerScanbody: outlinePointRange.min,

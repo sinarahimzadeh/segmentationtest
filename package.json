@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test:speed": "node --test scripts/openrouter-speed.test.mjs",
     "test:parallel": "node --test scripts/parallel-view-analysis.test.mjs",
-    "test:teeth": "node --test scripts/tooth-numbering.test.mjs"
+    "test:teeth": "node --test scripts/tooth-numbering.test.mjs",
+    "test:runs": "node --test scripts/model-run-options.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.129.0",

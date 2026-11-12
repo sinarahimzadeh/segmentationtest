@@ -44,17 +44,59 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Model benchmark
+## Model runs and benchmark
 
-1. Choose an STL and run the fixed **GPT-6.1 Sol / Medium** baseline. The
-   **Use OpenRouter for Sol Medium** toggle is on by default; turn it off to
-   use OpenAI directly. Changing the toggle applies to the next baseline run.
-2. Select a model and thinking level. Grok 4.7, 4.6, and 4.3 use your xAI API key.
-3. Run the comparison. The app compares the final 3D triangle IDs, not just
-   the 2D outlines.
+Choose an STL, then select any model and thinking level under **Run another
+model**. **Compare with Sol Medium** and **Save selected model results** both
+default to off. Click **Run segmentation** to use the model without creating
+a baseline or writing result files. Highlighting, exports, and tooth numbering
+still work with this result.
 
-**Parallel baseline views** and **Parallel comparison views** are independent
-toggles, both on by default. The comparison toggle is beside **Run and compare**.
+The two switches are independent:
+
+| Compare | Save | Behavior |
+| --- | --- | --- |
+| Off | Off | Normal segmentation, kept only for this session; no baseline needed |
+| Off | On | Normal segmentation saved under `benchmark-output/<STL SHA-256>/runs/` |
+| On | Off | Compare against an existing baseline, kept only for this session |
+| On | On | Compare against an existing baseline and save the comparison |
+
+The bottom camera-panel footer shows **PCA**, **Screenshots**, the existing
+**Model time**, and **3D mapping** separately. Each browser timer starts
+immediately before its function call and stops immediately after it returns:
+`orientGeometryWithPca`, `captureModelViews`, and `mapAnalysisToTriangles`.
+Capture includes all eight JPEG screenshots and hidden triangle-ID renders,
+renderer setup, pixel readback, and resource cleanup. Mapping includes local
+outline-to-triangle conversion, voting, and cleanup, but excludes API waiting,
+highlight drawing, export, and saving. File loading and STL parsing are also
+outside these timers.
+
+With saving enabled, `analysis.meta` in baseline, comparison, or standalone-run
+JSON records `pcaElapsedMs`, `captureElapsedMs`, and `mappingElapsedMs`, all in
+milliseconds. `elapsedMs` remains the existing LLM request time; the legacy
+`preparationElapsedMs` remains PCA + capture time. With saving off, measurements
+stay in the current session. Older saved runs use current-load PCA/capture
+values if separate measurements were not recorded, and display a dash for
+missing mapping measurements. Reload the STL to measure the new separate stages.
+
+Parallel runs also show an **AI request time under each camera image** and in
+the enlarged preview. Each clock starts immediately before that image's request
+and stops when its parsed response returns. It includes client setup, provider
+and network waiting, and any configured retries; it is not pure inference time.
+The measurements are kept in `analysis.meta.viewTimings` and saved with results
+when saving is enabled. The existing overall Model time remains unchanged and
+is not the sum of overlapping requests. Non-parallel runs use one shared request
+and show **AI: shared request**, without invented per-image times. Older saved
+results without measurements show a dash. Timing requires no extra AI requests.
+
+To compare models, first run the fixed **GPT-6.1 Sol / Medium** baseline and
+enable **Compare with Sol Medium**. The comparison uses final 3D triangle IDs,
+not just 2D outlines. **Use OpenRouter for Sol Medium** defaults to on; turn it
+off to use OpenAI directly. **Save baseline and tooth results** controls those
+two separate tasks, independently of the selected model's save switch.
+
+**Parallel baseline views** and **Parallel model views** are independent
+toggles, both on by default. The latter applies to normal and compared model runs.
 Parallel mode sends all eight views as eight concurrent requests using the selected model,
 thinking level, speed, image quality, and outline settings. Turn it off to use
 the original single request with all eight images. Parallel mode repeats the
@@ -68,8 +110,12 @@ completed calls can still be charged. No automatic grouped retry is made.
 The app saves baseline and comparison runs as normal JSON files under
 `benchmark-output/<STL SHA-256>/`. Each file contains the returned outline JSON,
 final triangle IDs, detected object count, model time, estimated API cost, and
-quality metrics. Reopening the same STL loads its saved files. Replacing the
-baseline clears comparison files made against the old baseline.
+quality metrics when compared. Reopening the same STL loads its saved files,
+including normal runs when no baseline exists. Standalone runs store no
+comparison metrics (`metrics: null`) and display a dash for comparison percentages. Replacing the baseline
+clears comparison files made against the old baseline and preserves standalone
+files in `runs/`. With a save switch off, neither its result file nor its raw
+LLM-response JSON is written.
 
 For OpenAI models selected through OpenRouter, **Speed** is separate from the
 thinking level. Fast is available for all five listed OpenAI models. Ultrafast
@@ -106,7 +152,7 @@ unassigned with an explanation. FDI uses the two-digit tooth designation system
 described by [ISO 3950](https://www.iso.org/standard/68292.html).
 
 The button calls `/api/tooth-numbers` only when clicked. Its cost and time are
-shown separately. **Save result files** also controls these results, saved under
+shown separately. **Save baseline and tooth results** controls these results, saved under
 `benchmark-output/<STL SHA-256>/tooth-numbers/<timestamp>.json`, including the
 actual returned JSON. It never replaces baseline/comparison files or the latest
 segmentation debug JSON. No screenshot copies are stored in these files.

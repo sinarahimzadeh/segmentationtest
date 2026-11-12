@@ -860,11 +860,11 @@
 
 .thumbnail footer {
   min-height: 30px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 5px;
-  padding: 0 7px;
+  gap: 4px 5px;
+  padding: 6px 7px;
   border-top: 1px solid #303b3f;
   font-size: 9px;
   color: #8f9ca1;
@@ -876,6 +876,21 @@
   white-space: nowrap;
   color: #d1d9dc;
   font-weight: 690;
+}
+
+.viewRequestTime {
+  grid-column: 1 / -1;
+  color: #9dc9c2;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+}
+
+.previewRequestTime {
+  display: block;
+  margin-top: 4px;
+  color: #9dc9c2;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
 }
 
 .outlineLayer {
@@ -994,19 +1009,33 @@
 }
 
 .analysisFooter {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
   border-top: 1px solid var(--line);
   background: #111719;
 }
 
-.analysisFooter div {
+.analysisStats,
+.analysisTimings {
+  display: grid;
+}
+
+.analysisStats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.analysisTimings {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+}
+
+.analysisStats > div,
+.analysisTimings > div {
   min-width: 0;
   padding: 10px 8px;
   border-right: 1px solid var(--line);
 }
 
-.analysisFooter div:last-child {
+.analysisStats > div:last-child,
+.analysisTimings > div:last-child {
   border-right: 0;
 }
 

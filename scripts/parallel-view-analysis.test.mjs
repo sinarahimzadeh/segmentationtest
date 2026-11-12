@@ -19,7 +19,9 @@ const resultFor = (batch, overrides = {}) => ({
   ...overrides,
 });
 
-test("all eight start together; reverse completion preserves view order and totals", async () => {
+test("all eight start together; reverse completion preserves view order, individual times and totals", async (t) => {
+  let clockNow = 0;
+  t.mock.method(performance, "now", () => clockNow);
   const finish = [];
   const pending = analyzeViewBatches(views, true, (batch) => {
     assert.equal(batch.length, 1);
@@ -27,10 +29,15 @@ test("all eight start together; reverse completion preserves view order and tota
     return new Promise((resolve) => { finish[index] = () => resolve(resultFor(batch)); });
   });
   assert.equal(finish.length, 8, "every call must start before any completes");
-  for (const complete of finish.toReversed()) complete();
+  for (const complete of finish.toReversed()) {
+    clockNow += 10;
+    complete();
+    await Promise.resolve();
+  }
   const result = await pending;
   assert.deepEqual(result.parsed.views.map((view) => view.view), views.map((view) => view.name));
   assert.equal(result.viewRequestCount, 8);
+  assert.deepEqual(result.viewTimings, views.map((view, index) => ({ view: view.name, elapsedMs: (8 - index) * 10 })));
   assert.equal(result.inputTokens, 800);
   assert.equal(result.cachedInputTokens, 16);
   assert.equal(result.outputTokens, 80);
@@ -49,6 +56,11 @@ test("off keeps all eight images in one request", async () => {
   assert.equal(result.viewRequestCount, 1);
   assert.equal(result.inputTokens, 100);
   assert.equal(result.estimatedCostUsd, 0.01);
+  assert.equal(result.viewTimings, null, "a shared eight-image request has no individual image times");
+  const single = await analyzeViewBatches(views.slice(0, 1), false, async (batch) => resultFor(batch));
+  assert.equal(single.viewTimings.length, 1);
+  assert.equal(single.viewTimings[0].view, views[0].name);
+  assert(single.viewTimings[0].elapsedMs >= 0);
 });
 
 test("a failed view waits for other calls and never returns an incomplete success", async () => {
@@ -195,8 +207,11 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
   assert.equal(parallel.meta.reportedCostUsd, parallel.meta.estimatedCostUsd);
   assert.equal(parallel.meta.viewRequestCount, 8);
   assert.equal(parallel.meta.parallelViews, true);
+  assert.deepEqual(parallel.meta.viewTimings.map((timing) => timing.view), views.map((view) => view.name));
+  assert(parallel.meta.viewTimings.every((timing) => Number.isFinite(timing.elapsedMs) && timing.elapsedMs >= 0));
   assert.match(parallel.meta.modelLabel, /Parallel$/);
   assert.equal(grouped.meta.viewRequestCount, 1);
+  assert.equal(grouped.meta.viewTimings, null);
   assert.equal(grouped.meta.estimatedCostUsd, 0.0123);
   // Parallelism is independent of the Fast/Ultrafast tier and never drops it.
   await analyze(true, { type: "comparison", model: "openrouter-gpt-6.1-sol", reasoningEffort: "high", processingSpeed: "ultrafast" });
@@ -205,6 +220,16 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
     assert.deepEqual(body.provider.only, ["openai/ultrafast"]);
     assert.equal(body.provider.allow_fallbacks, false);
     assert.deepEqual(body.reasoning, { effort: "high" });
+  }
+  // A selected model can use exactly the same eight-view path without a baseline.
+  const standalone = await analyze(true, {
+    type: "standalone", model: "openrouter-gpt-6.1-terra", reasoningEffort: "low", processingSpeed: "standard",
+  });
+  assert.equal(standalone.meta.model, "openrouter-gpt-6.1-terra");
+  assert.equal(standalone.meta.viewRequestCount, 8);
+  for (const request of requests.slice(-8)) {
+    assert.equal(request.model, "openai/gpt-6.1-terra");
+    assert.deepEqual(request.reasoning, { effort: "low" });
   }
   // Equal bounds restore a fixed point count without contradictory instructions.
   process.env.SCANBODY_OUTLINE_MIN_POINTS = "40";

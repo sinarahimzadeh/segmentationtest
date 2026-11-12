@@ -28,12 +28,20 @@ const analysisSchema = z.object({
     processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
     parallelViews: z.boolean().optional(),
     viewRequestCount: z.number().int().positive().optional(),
+    viewTimings: z.array(z.object({
+      view: z.string().min(1),
+      elapsedMs: z.number().finite().nonnegative(),
+    })).nullable().optional(),
     outlinePointsPerScanbody: z.number().int().min(3).optional(),
     outlineMinPointsPerScanbody: z.number().int().min(3).optional(),
     outlineMaxPointsPerScanbody: z.number().int().min(3).optional(),
     serviceTier: z.string().nullable().optional(),
     reportedCostUsd: z.number().nonnegative().nullable().optional(),
     elapsedMs: z.number(),
+    pcaElapsedMs: z.number().finite().nonnegative().nullable().optional(),
+    captureElapsedMs: z.number().finite().nonnegative().nullable().optional(),
+    preparationElapsedMs: z.number().finite().nonnegative().nullable().optional(),
+    mappingElapsedMs: z.number().finite().nonnegative().nullable().optional(),
     inputTokens: z.number().nullable(),
     cachedInputTokens: z.number().nullable(),
     outputTokens: z.number().nullable(),
@@ -58,7 +66,7 @@ const savedRunSchema = z.object({
   meshName: z.string().min(1).max(500),
   // Optional so benchmark files created before folder labels were added still load.
   meshFolderName: z.string().min(1).max(500).optional(),
-  kind: z.enum(["baseline", "comparison"]),
+  kind: z.enum(["baseline", "comparison", "standalone"]),
   model: z.enum(AI_MODEL_IDS),
   reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
   processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
@@ -69,6 +77,10 @@ const savedRunSchema = z.object({
   // Optional keeps old comparisons and the unchanged baseline format compatible.
   detectedScanbodyCount: z.number().int().nonnegative().optional(),
   metrics: metricsSchema.nullable(),
+}).superRefine((run, context) => {
+  if (run.kind === "standalone" && run.metrics !== null) {
+    context.addIssue({ code: "custom", path: ["metrics"], message: "Standalone runs do not have baseline comparison metrics." });
+  }
 });
 
 const outputRoot = resolve(process.cwd(), "benchmark-output");
@@ -106,12 +118,14 @@ export async function POST(request: Request) {
     const run = savedRunSchema.parse(await request.json());
     const meshDirectory = getMeshDirectory(run.meshKey);
     const comparisonsDirectory = join(meshDirectory, "comparisons");
-    await mkdir(comparisonsDirectory, { recursive: true });
+    // Uncompared results have their own folder and survive baseline replacement.
+    const runDirectory = join(meshDirectory, run.kind === "standalone" ? "runs" : "comparisons");
+    await mkdir(runDirectory, { recursive: true });
 
     const outputPath =
       run.kind === "baseline"
         ? join(meshDirectory, "baseline-sol-medium.json")
-        : join(comparisonsDirectory, comparisonFileName(run));
+        : join(runDirectory, comparisonFileName(run));
 
     // A new baseline makes all old comparison scores invalid. Save the new
     // baseline first, then remove only the old comparison JSON files.
@@ -150,19 +164,22 @@ export async function GET(request: Request) {
       // No saved baseline for this STL yet.
     }
 
-    try {
-      const files = (await readdir(comparisonsDirectory))
-        .filter((name) => name.endsWith(".json"))
-        .sort()
-        .reverse();
-      const comparisons = await Promise.all(
-        files.map(async (name) =>
-          JSON.parse(await readFile(join(comparisonsDirectory, name), "utf8")),
-        ),
-      );
-      runs.push(...comparisons);
-    } catch {
-      // The comparisons folder is created after the first saved run.
+    for (const runDirectory of [comparisonsDirectory, join(meshDirectory, "runs")]) {
+      try {
+        // These are runtime-generated user results, not bundled source assets.
+        const files = (await readdir(/* turbopackIgnore: true */ runDirectory))
+          .filter((name) => name.endsWith(".json"))
+          .sort()
+          .reverse();
+        const savedRuns = await Promise.all(
+          files.map(async (name) =>
+            JSON.parse(await readFile(join(runDirectory, name), "utf8")),
+          ),
+        );
+        runs.push(...savedRuns);
+      } catch {
+        // Each folder is created after its first saved run.
+      }
     }
 
     return NextResponse.json({

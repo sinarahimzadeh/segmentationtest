@@ -93,6 +93,16 @@ function formatEstimatedCost(cost: number | null) {
   return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(3)}`;
 }
 
+function formatStageTime(elapsedMs: number | null | undefined) {
+  if (elapsedMs == null) return "—";
+  return elapsedMs < 1000 ? `${elapsedMs.toFixed(1)}ms` : `${(elapsedMs / 1000).toFixed(2)}s`;
+}
+
+function formatViewRequestTime(elapsedMs: number | undefined, sharedRequest: boolean) {
+  if (elapsedMs != null) return `AI: ${formatStageTime(elapsedMs)}`;
+  return sharedRequest ? "AI: shared request" : "AI: —";
+}
+
 function getParentFolderName(file: File) {
   const parts = file.webkitRelativePath
     .replaceAll("\\", "/")
@@ -156,6 +166,11 @@ export default function ScanbodyWorkspace() {
 
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [capturedViews, setCapturedViews] = useState<CapturedView[]>([]);
+  const [pcaElapsedMs, setPcaElapsedMs] = useState<number | null>(null);
+  const [captureElapsedMs, setCaptureElapsedMs] = useState<number | null>(null);
+  // Preserve the old combined field in saved JSON while recording both stages.
+  const preparationElapsedMs = pcaElapsedMs == null || captureElapsedMs == null
+    ? null : pcaElapsedMs + captureElapsedMs;
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [toothNumbers, setToothNumbers] = useState<ToothNumberResult | null>(null);
   const [toothJawHint, setToothJawHint] = useState<JawHint>("auto");
@@ -166,7 +181,7 @@ export default function ScanbodyWorkspace() {
   );
   const [selectedObjectCount, setSelectedObjectCount] = useState(0);
   const [baselineRun, setBaselineRun] = useState<SavedBenchmarkRun | null>(null);
-  const [comparisonRuns, setComparisonRuns] = useState<SavedBenchmarkRun[]>([]);
+  const [modelRuns, setModelRuns] = useState<SavedBenchmarkRun[]>([]);
   const [comparisonSearch, setComparisonSearch] = useState("");
   const [comparisonModel, setComparisonModel] =
     useState<AiModelId>("gpt-6.1-sol");
@@ -177,6 +192,9 @@ export default function ScanbodyWorkspace() {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveResultFiles, setSaveResultFiles] = useState(true);
+  // Selected models can run normally without saving or paying for a baseline.
+  const [saveModelResultFiles, setSaveModelResultFiles] = useState(false);
+  const [compareModelWithBaseline, setCompareModelWithBaseline] = useState(false);
   const [useOpenRouterBaseline, setUseOpenRouterBaseline] = useState(true);
   const [baselineParallelViews, setBaselineParallelViews] = useState(true);
   const [comparisonParallelViews, setComparisonParallelViews] = useState(true);
@@ -327,6 +345,8 @@ export default function ScanbodyWorkspace() {
       setError(null);
       setAnalysisNotice(null);
       setAnalysis(null);
+      setPcaElapsedMs(null);
+      setCaptureElapsedMs(null);
       setToothNumbers(null);
       setToothJawHint("auto");
       setToothRightSideHint("unknown");
@@ -335,7 +355,7 @@ export default function ScanbodyWorkspace() {
       setSelectedTriangleIds(new Set());
       setSelectedObjectCount(0);
       setBaselineRun(null);
-      setComparisonRuns([]);
+      setModelRuns([]);
       setComparisonSearch("");
       triangleIdMapsRef.current.clear();
       originalPositionsRef.current = null;
@@ -362,7 +382,12 @@ export default function ScanbodyWorkspace() {
         }
         originalPositionsRef.current = originalValues;
 
+        // PCA STOPWATCH: start immediately before alignment and stop as soon as
+        // it returns. File reading, STL parsing, and viewer setup are excluded.
+        const pcaStartedAt = performance.now();
         orientGeometryWithPca(geometry);
+        const pcaElapsedMs = performance.now() - pcaStartedAt;
+        setPcaElapsedMs(pcaElapsedMs);
 
         const positions = geometry.getAttribute("position") as THREE.BufferAttribute;
         const colorValues = new Float32Array(positions.count * 3);
@@ -407,7 +432,12 @@ export default function ScanbodyWorkspace() {
 
         setBusyLabel("Rendering 8 views");
         await new Promise((resolve) => requestAnimationFrame(resolve));
+        // CAPTURE STOPWATCH: includes renderer setup, all eight JPEG captures,
+        // hidden triangle-ID renders/readback, and capture-resource cleanup.
+        const captureStartedAt = performance.now();
         const captures = captureModelViews(geometry);
+        const captureElapsedMs = performance.now() - captureStartedAt;
+        setCaptureElapsedMs(captureElapsedMs);
         triangleIdMapsRef.current = captures.triangleIdMaps;
         setCapturedViews(captures.views);
 
@@ -416,18 +446,20 @@ export default function ScanbodyWorkspace() {
           const savedRuns = await loadBenchmarkFiles(meshKey);
           const savedBaseline =
             savedRuns.find((run) => run.kind === "baseline") ?? null;
-          const savedComparisons = savedRuns.filter(
-            (run) => run.kind === "comparison",
-          );
+          const savedModelRuns = savedRuns.filter((run) => run.kind !== "baseline")
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
           setBaselineRun(savedBaseline);
-          setComparisonRuns(savedComparisons);
-          if (savedBaseline) {
-            setAnalysis(savedBaseline.analysis);
+          setModelRuns(savedModelRuns);
+          const displayedRun = savedBaseline ?? savedModelRuns[0];
+          if (displayedRun) {
+            setAnalysis(displayedRun.analysis);
             setSelectedTriangleIds(
-              new Set(savedBaseline.selectedTriangleIds),
+              new Set(displayedRun.selectedTriangleIds),
             );
-            setSelectedObjectCount(savedBaseline.objectCount);
-            setAnalysisNotice("Saved Sol Medium baseline loaded for this STL.");
+            setSelectedObjectCount(displayedRun.objectCount);
+            setAnalysisNotice(savedBaseline
+              ? "Saved Sol Medium baseline loaded for this STL."
+              : `${displayedRun.analysis.meta.modelLabel} saved run loaded for this STL.`);
           }
         } catch {
           setAnalysisNotice(
@@ -468,13 +500,14 @@ export default function ScanbodyWorkspace() {
   }, []);
 
   const runAnalysis = useCallback(async (
-    runKind: "baseline" | "comparison",
+    runKind: SavedBenchmarkRun["kind"],
   ) => {
     if (capturedViews.length === 0) return;
     if (runKind === "comparison" && !baselineRun) {
       setError("Run the Sol Medium baseline first.");
       return;
     }
+    const shouldSaveFiles = runKind === "baseline" ? saveResultFiles : saveModelResultFiles;
     setBusyLabel("Finding scanbodies");
     setError(null);
     setAnalysisNotice(null);
@@ -485,21 +518,21 @@ export default function ScanbodyWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageSize: CAPTURE_SIZE,
-          // This controls both benchmark files and the temporary raw-response
-          // JSON. Detection and in-memory comparison still work when it is off.
-          saveFiles: saveResultFiles,
+          // The selected run's own save switch controls both its result file and
+          // raw-response JSON. Baseline/tooth saving has a separate switch.
+          saveFiles: shouldSaveFiles,
           // Each section controls its own request mode independently.
           parallelViews: runKind === "baseline" ? baselineParallelViews : comparisonParallelViews,
           // The toggle changes only Claude comparisons; the baseline stays Sol.
           directClaude:
-            runKind === "comparison" &&
+            runKind !== "baseline" &&
             getAiModelOption(comparisonModel).provider === "anthropic" &&
             directClaude,
           run:
             runKind === "baseline"
               ? { type: "baseline", useOpenRouter: useOpenRouterBaseline }
               : {
-                  type: "comparison",
+                  type: runKind,
                   model: comparisonModel,
                   reasoningEffort: comparisonEffort,
                   processingSpeed: comparisonSpeed,
@@ -514,8 +547,18 @@ export default function ScanbodyWorkspace() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Analysis failed.");
-      const result = payload as AnalysisResult;
-      const { triangleIds, groupCount } = mapAnalysisToTriangles(result);
+      const apiResult = payload as AnalysisResult;
+      // MAPPING STOPWATCH: starts after the API response has been received and
+      // parsed; stops when local mapping, voting, and mesh cleanup return.
+      // Highlight rendering, exports, and saving files happen after this timer.
+      // The server's existing LLM elapsedMs remains unchanged.
+      const mappingStartedAt = performance.now();
+      const { triangleIds, groupCount } = mapAnalysisToTriangles(apiResult);
+      const mappingElapsedMs = performance.now() - mappingStartedAt;
+      const result: AnalysisResult = {
+        ...apiResult,
+        meta: { ...apiResult.meta, pcaElapsedMs, captureElapsedMs, preparationElapsedMs, mappingElapsedMs },
+      };
       setAnalysis(result);
       setToothNumbers(null);
       setToothRightSideHint("unknown");
@@ -553,7 +596,7 @@ export default function ScanbodyWorkspace() {
         id:
           runKind === "baseline"
             ? `baseline:v${BENCHMARK_STORAGE_VERSION}:${modelInfo.key}`
-            : `comparison:${modelInfo.key}:${Date.now()}:${runModel}:${runEffort}:${result.meta.processingSpeed ?? "standard"}`,
+            : `${runKind}:${modelInfo.key}:${Date.now()}:${runModel}:${runEffort}:${result.meta.processingSpeed ?? "standard"}`,
         storageVersion: BENCHMARK_STORAGE_VERSION,
         meshKey: modelInfo.key,
         meshName: modelInfo.name,
@@ -561,16 +604,16 @@ export default function ScanbodyWorkspace() {
         kind: runKind,
         model: runModel,
         reasoningEffort: runEffort,
-        ...(runKind === "comparison" && result.meta.processingSpeed
+        ...(runKind !== "baseline" && result.meta.processingSpeed
           ? { processingSpeed: result.meta.processingSpeed }
           : {}),
         createdAt: new Date().toISOString(),
         analysis: result,
         selectedTriangleIds: [...triangleIds].sort((a, b) => a - b),
         objectCount: groupCount,
-        // Keep the baseline JSON unchanged. Comparison JSON gets this clearer
+        // Keep the baseline JSON unchanged. Other model runs get this clearer
         // field so the final number of separate 3D scanbodies is easy to find.
-        ...(runKind === "comparison"
+        ...(runKind !== "baseline"
           ? { detectedScanbodyCount: groupCount }
           : {}),
         metrics,
@@ -582,16 +625,18 @@ export default function ScanbodyWorkspace() {
         // Replacing the baseline invalidates comparisons made against the old
         // one, so those old candidate runs are cleared deliberately.
         setBaselineRun(savedRun);
-        setComparisonRuns([]);
+        setModelRuns((current) => current.filter((run) => run.kind === "standalone"));
       } else {
-        setComparisonRuns((current) => [savedRun, ...current]);
+        setModelRuns((current) => [savedRun, ...current]);
       }
 
-      if (!saveResultFiles) {
+      if (!shouldSaveFiles) {
         setAnalysisNotice(
           runKind === "baseline"
             ? "Sol Medium baseline is ready for this session. File saving is off."
-            : `Comparison is ready for this session. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium. File saving is off.`,
+            : runKind === "standalone"
+              ? "Segmentation is ready. No baseline comparison or files saved."
+              : `Comparison is ready for this session. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium. File saving is off.`,
         );
       } else {
         try {
@@ -603,7 +648,9 @@ export default function ScanbodyWorkspace() {
           } else {
             const savedPath = await saveBenchmarkFile(savedRun);
             setAnalysisNotice(
-              `Comparison saved to ${savedPath}. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium.`,
+              runKind === "standalone"
+                ? `Segmentation saved to ${savedPath}. No baseline comparison.`
+                : `Comparison saved to ${savedPath}. ${metrics?.sameTrianglePercent.toFixed(1) ?? "0.0"}% same triangles as Sol Medium.`,
             );
           }
         } catch (storageError) {
@@ -633,7 +680,11 @@ export default function ScanbodyWorkspace() {
     directClaude,
     mapAnalysisToTriangles,
     modelInfo,
+    pcaElapsedMs,
+    captureElapsedMs,
+    preparationElapsedMs,
     saveResultFiles,
+    saveModelResultFiles,
     useOpenRouterBaseline,
   ]);
 
@@ -731,6 +782,11 @@ export default function ScanbodyWorkspace() {
     () => new Map(analysis?.views.map((view) => [view.view, view.detections]) ?? []),
     [analysis],
   );
+  const requestTimesByView = useMemo(
+    () => new Map(analysis?.meta.viewTimings?.map((timing) => [timing.view, timing.elapsedMs]) ?? []),
+    [analysis],
+  );
+  const sharedImageRequest = analysis?.meta.viewTimings === null;
   const previewView = capturedViews.find(
     (view) => view.name === previewViewName,
   );
@@ -748,11 +804,11 @@ export default function ScanbodyWorkspace() {
   const uncertainToothReasons = [...new Set(toothNumbers?.assignments
     .filter((assignment) => assignment.toothFdi === null)
     .map((assignment) => assignment.reason) ?? [])];
-  const latestComparison = comparisonRuns[0] ?? null;
+  const latestModelRun = modelRuns[0] ?? null;
   // Ignore separators such as the middle dot, so "terra high" finds
   // "GPT-6.1 Terra · High" without requiring the user to type that symbol.
   const searchTerms = comparisonSearch.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  const visibleComparisonRuns = comparisonRuns.filter((run) => {
+  const visibleModelRuns = modelRuns.filter((run) => {
     const modelText = run.analysis.meta.modelLabel
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, " ");
@@ -885,8 +941,8 @@ export default function ScanbodyWorkspace() {
             </div>
             <label className={styles.saveToggle}>
               <span>
-                <strong>Save result files</strong>
-                <small>Benchmark and raw LLM JSON</small>
+                <strong>Save baseline and tooth results</strong>
+                <small>Selected models have their own save switch below</small>
               </span>
               <input
                 type="checkbox"
@@ -966,7 +1022,7 @@ export default function ScanbodyWorkspace() {
               </p>
             )}
 
-            <div className={styles.comparisonDivider}>Compare another run</div>
+            <div className={styles.comparisonDivider}>Run another model</div>
             <div className={styles.selectorGrid}>
               <label>
                 <span>AI model</span>
@@ -1100,7 +1156,7 @@ export default function ScanbodyWorkspace() {
             {/* Comparison mode is independent of the baseline switch above. */}
             <label className={styles.saveToggle}>
               <span>
-                <strong>Parallel comparison views</strong>
+                <strong>Parallel model views</strong>
                 <small>On: one request per view · Off: all views together</small>
                 <small>Separate requests can change cost and results.</small>
               </span>
@@ -1114,12 +1170,35 @@ export default function ScanbodyWorkspace() {
                 <span />
               </span>
             </label>
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Compare with Sol Medium</strong>
+                <small>Off: run normally, without a baseline</small>
+              </span>
+              <input type="checkbox" checked={compareModelWithBaseline}
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => setCompareModelWithBaseline(event.currentTarget.checked)} />
+              <span className={styles.toggleTrack} aria-hidden="true"><span /></span>
+            </label>
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Save selected model results</strong>
+                <small>Off: keep the result only for this session</small>
+              </span>
+              <input type="checkbox" checked={saveModelResultFiles}
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => setSaveModelResultFiles(event.currentTarget.checked)} />
+              <span className={styles.toggleTrack} aria-hidden="true"><span /></span>
+            </label>
+            {compareModelWithBaseline && !baselineRun ? (
+              <p className={styles.benchmarkHint}>Run a Sol Medium baseline first, or switch comparison off.</p>
+            ) : null}
             <button
               className={styles.comparisonButton}
               type="button"
-              onClick={() => void runAnalysis("comparison")}
+              onClick={() => void runAnalysis(compareModelWithBaseline ? "comparison" : "standalone")}
               disabled={
-                !baselineRun ||
+                (compareModelWithBaseline && !baselineRun) ||
                 capturedViews.length === 0 ||
                 Boolean(busyLabel)
               }
@@ -1129,42 +1208,43 @@ export default function ScanbodyWorkspace() {
               ) : (
                 <ScanSearch size={17} />
               )}
-              Run and compare
+              {compareModelWithBaseline ? "Run and compare" : "Run segmentation"}
             </button>
 
-            {latestComparison?.metrics ? (
+            {latestModelRun ? (
               <div className={styles.comparisonCard}>
                 <div className={styles.savedRunHeading}>
-                  <strong>{latestComparison.analysis.meta.modelLabel}</strong>
+                  <strong>{latestModelRun.analysis.meta.modelLabel}</strong>
                   <button
                     type="button"
-                    onClick={() => showSavedRun(latestComparison)}
+                    onClick={() => showSavedRun(latestModelRun)}
                   >
                     Show
                   </button>
                 </div>
-                <div className={styles.metricGrid}>
-                  <span><strong>{latestComparison.metrics.sameTrianglePercent.toFixed(1)}%</strong>Same triangles</span>
-                  <span><strong>{latestComparison.metrics.baselineFoundPercent.toFixed(1)}%</strong>Inlier</span>
-                  <span><strong>{latestComparison.metrics.missedBaselinePercent.toFixed(1)}%</strong>Missed</span>
-                  <span><strong>{latestComparison.metrics.extraCandidatePercent.toFixed(1)}%</strong>Outlier</span>
-                </div>
+                {latestModelRun.metrics ? (
+                  <div className={styles.metricGrid}>
+                    <span><strong>{latestModelRun.metrics.sameTrianglePercent.toFixed(1)}%</strong>Same triangles</span>
+                    <span><strong>{latestModelRun.metrics.baselineFoundPercent.toFixed(1)}%</strong>Inlier</span>
+                    <span><strong>{latestModelRun.metrics.missedBaselinePercent.toFixed(1)}%</strong>Missed</span>
+                    <span><strong>{latestModelRun.metrics.extraCandidatePercent.toFixed(1)}%</strong>Outlier</span>
+                  </div>
+                ) : <p className={styles.benchmarkHint}>Standalone run · No baseline comparison</p>}
                 <div className={styles.runCostLine}>
-                  <span>{(latestComparison.analysis.meta.elapsedMs / 1000).toFixed(1)} seconds</span>
-                  <span>{formatRunCost(latestComparison.analysis.meta)}</span>
-                  <span>{latestComparison.objectCount} objects</span>
+                  <span>{(latestModelRun.analysis.meta.elapsedMs / 1000).toFixed(1)} seconds</span>
+                  <span>{formatRunCost(latestModelRun.analysis.meta)}</span>
+                  <span>{latestModelRun.objectCount} objects</span>
                 </div>
               </div>
             ) : null}
 
-            {comparisonRuns.length > 0 ? (
-              <div className={styles.runHistory}>
-                <span>Comparison table</span>
+            <div className={styles.runHistory}>
+                <span>Model runs</span>
                 <label className={styles.runHistorySearch}>
                   <Search size={14} aria-hidden="true" />
                   <input
                     type="search"
-                    aria-label="Search comparison models"
+                    aria-label="Search model runs"
                     placeholder="Search model name"
                     value={comparisonSearch}
                     onChange={(event) => setComparisonSearch(event.target.value)}
@@ -1174,22 +1254,27 @@ export default function ScanbodyWorkspace() {
                   <div className={styles.runHistoryHeader}>
                     <span>Model</span><span>Same</span><span>Inlier</span><span>Outlier</span><span>Time</span><span>Cost</span>
                   </div>
-                  {visibleComparisonRuns.map((run) => (
+                  {visibleModelRuns.map((run) => (
                     <button key={run.id} type="button" onClick={() => showSavedRun(run)}>
                       <span title={run.analysis.meta.modelLabel}>{run.analysis.meta.modelLabel}</span>
-                      <strong>{run.metrics?.sameTrianglePercent.toFixed(1) ?? "-"}%</strong>
-                      <strong>{run.metrics?.baselineFoundPercent.toFixed(1) ?? "-"}%</strong>
-                      <strong>{run.metrics?.extraCandidatePercent.toFixed(1) ?? "-"}%</strong>
+                      <strong>{run.metrics ? `${run.metrics.sameTrianglePercent.toFixed(1)}%` : "—"}</strong>
+                      <strong>{run.metrics ? `${run.metrics.baselineFoundPercent.toFixed(1)}%` : "—"}</strong>
+                      <strong>{run.metrics ? `${run.metrics.extraCandidatePercent.toFixed(1)}%` : "—"}</strong>
                       <strong>{(run.analysis.meta.elapsedMs / 1000).toFixed(0)}s</strong>
                       <strong>{formatRunCost(run.analysis.meta)}</strong>
                     </button>
                   ))}
-                  {visibleComparisonRuns.length === 0 ? (
-                    <p className={styles.runHistoryEmpty}>No matching models.</p>
+                  {visibleModelRuns.length === 0 ? (
+                    <p className={styles.runHistoryEmpty}>
+                      {!modelInfo
+                        ? "Choose an STL to load its saved runs."
+                        : modelRuns.length === 0
+                          ? "No model runs for this STL yet. Run a model to add a row."
+                          : "No matching models. Clear the search to show all runs."}
+                    </p>
                   ) : null}
                 </div>
-              </div>
-            ) : null}
+            </div>
 
             <div className={styles.pipeline}>
               <PipelineRow done={Boolean(modelInfo)} label="PCA alignment" />
@@ -1401,33 +1486,51 @@ export default function ScanbodyWorkspace() {
                   key={view.name}
                   view={view}
                   detections={detectionsByView.get(view.name) ?? []}
+                  requestElapsedMs={requestTimesByView.get(view.name)}
+                  sharedRequest={sharedImageRequest}
                   onOpen={() => setPreviewViewName(view.name)}
                 />
               ))
             )}
           </div>
 
-          {analysis ? (
+          {capturedViews.length > 0 || analysis ? (
             <div className={styles.analysisFooter}>
-              <div title={analysis.meta.modelLabel}>
-                <span>Current run</span>
-                <strong>{analysis.meta.modelLabel.replace("GPT-6.1 ", "")}</strong>
+              <div className={styles.analysisStats}>
+                <div title={analysis?.meta.modelLabel}>
+                  <span>Current run</span>
+                  <strong>{analysis?.meta.modelLabel.replace("GPT-6.1 ", "") ?? "—"}</strong>
+                </div>
+                <div>
+                  <span>2D detections</span>
+                  <strong>{detectionCount}</strong>
+                </div>
+                <div>
+                  <span>3D triangles</span>
+                  <strong>{selectedTriangleIds.size.toLocaleString()}</strong>
+                </div>
+                <div>
+                  <span>Est. cost</span>
+                  <strong>{analysis ? formatRunCost(analysis.meta) : "—"}</strong>
+                </div>
               </div>
-              <div>
-                <span>2D detections</span>
-                <strong>{detectionCount}</strong>
-              </div>
-              <div>
-                <span>3D triangles</span>
-                <strong>{selectedTriangleIds.size.toLocaleString()}</strong>
-              </div>
-              <div>
-                <span>Est. cost</span>
-                <strong>{formatRunCost(analysis.meta)}</strong>
-              </div>
-              <div>
-                <span>Model time</span>
-                <strong>{(analysis.meta.elapsedMs / 1000).toFixed(1)}s</strong>
+              <div className={styles.analysisTimings}>
+                <div title="PCA alignment only. Uses the saved run's recorded value when available, otherwise the current STL load.">
+                  <span>PCA</span>
+                  <strong>{formatStageTime(analysis?.meta.pcaElapsedMs ?? pcaElapsedMs)}</strong>
+                </div>
+                <div title="All eight JPEG captures and hidden triangle-ID renders, including renderer setup, pixel readback, and cleanup.">
+                  <span>Screenshots</span>
+                  <strong>{formatStageTime(analysis?.meta.captureElapsedMs ?? captureElapsedMs)}</strong>
+                </div>
+                <div>
+                  <span>Model time</span>
+                  <strong>{analysis ? `${(analysis.meta.elapsedMs / 1000).toFixed(1)}s` : "—"}</strong>
+                </div>
+                <div title="Recorded time converting the returned 2D outlines into 3D triangles, including multiview voting and local cleanup.">
+                  <span>3D mapping</span>
+                  <strong>{formatStageTime(analysis?.meta.mappingElapsedMs)}</strong>
+                </div>
               </div>
             </div>
           ) : null}
@@ -1451,6 +1554,9 @@ export default function ScanbodyWorkspace() {
               <div>
                 <span className={styles.eyebrow}>Camera view</span>
                 <strong>{previewView.label}</strong>
+                <small className={styles.previewRequestTime}>
+                  {formatViewRequestTime(requestTimesByView.get(previewView.name), sharedImageRequest)}
+                </small>
               </div>
               <button
                 type="button"
@@ -1488,10 +1594,14 @@ function PipelineRow({ done, label }: { done: boolean; label: string }) {
 function ViewThumbnail({
   view,
   detections,
+  requestElapsedMs,
+  sharedRequest,
   onOpen,
 }: {
   view: CapturedView;
   detections: Detection[];
+  requestElapsedMs?: number;
+  sharedRequest: boolean;
   onOpen: () => void;
 }) {
   return (
@@ -1538,6 +1648,11 @@ function ViewThumbnail({
       <footer>
         <span>{view.label}</span>
         <span>{detections.length ? `${detections.length} ROI` : "Clear"}</span>
+        <small className={styles.viewRequestTime} title={sharedRequest
+          ? "All images were sent in one request; separate image times are unavailable."
+          : "Elapsed API request time for this image, including provider/network waiting and response parsing. Not pure model inference time."}>
+          {formatViewRequestTime(requestElapsedMs, sharedRequest)}
+        </small>
       </footer>
     </button>
   );

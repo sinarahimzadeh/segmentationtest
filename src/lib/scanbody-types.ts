@@ -27,6 +27,9 @@ export type AnalysisResult = {
     processingSpeed?: ProcessingSpeed;
     parallelViews?: boolean;
     viewRequestCount?: number;
+    // One entry per individually requested image. Null means a shared request;
+    // absent means this older result did not record per-image measurements.
+    viewTimings?: { view: string; elapsedMs: number }[] | null;
     // Requested point range; actual counts are each detection's outline.length.
     outlinePointsPerScanbody?: number;
     outlineMinPointsPerScanbody?: number;
@@ -34,6 +37,12 @@ export type AnalysisResult = {
     serviceTier?: string | null;
     reportedCostUsd?: number | null;
     elapsedMs: number;
+    // Browser stage timings, recorded only for newly processed results.
+    pcaElapsedMs?: number | null;
+    captureElapsedMs?: number | null;
+    // Legacy total kept for compatibility: PCA + screenshot capture.
+    preparationElapsedMs?: number | null;
+    mappingElapsedMs?: number | null;
     inputTokens: number | null;
     cachedInputTokens: number | null;
     outputTokens: number | null;

@@ -394,6 +394,13 @@
   gap: 8px;
 }
 
+.imageSettingsNote {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .selectorGrid label,
 .speedSelector {
   min-width: 0;

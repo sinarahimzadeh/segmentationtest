@@ -22,6 +22,10 @@ import { TrackballControls } from "three/addons/controls/TrackballControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import styles from "./ScanbodyWorkspace.module.css";
 import { captureModelViews } from "@/lib/capture-views";
+import {
+  IMAGE_DIMENSIONS, JPEG_QUALITIES, prepareImageViews, scaleOutlinePoints,
+  type ImageDimension, type JpegQuality,
+} from "@/lib/image-input";
 import { orientGeometryWithPca } from "@/lib/pca";
 import {
   createBinaryStlBlob,
@@ -166,6 +170,15 @@ export default function ScanbodyWorkspace() {
 
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [capturedViews, setCapturedViews] = useState<CapturedView[]>([]);
+  const [sourceCanvases, setSourceCanvases] = useState<ReadonlyMap<string, HTMLCanvasElement>>(() => new Map());
+  const [imageDimension, setImageDimension] = useState<ImageDimension>(1024);
+  const [jpegQuality, setJpegQuality] = useState<JpegQuality>(90);
+  // Only the outgoing images change. PCA, cameras and 1024-pixel ID maps stay
+  // fixed, so comparisons always refer to the same original STL triangles.
+  const requestViews = useMemo(
+    () => prepareImageViews(capturedViews, sourceCanvases, imageDimension, jpegQuality),
+    [capturedViews, sourceCanvases, imageDimension, jpegQuality],
+  );
   const [pcaElapsedMs, setPcaElapsedMs] = useState<number | null>(null);
   const [captureElapsedMs, setCaptureElapsedMs] = useState<number | null>(null);
   // Preserve the old combined field in saved JSON while recording both stages.
@@ -192,6 +205,7 @@ export default function ScanbodyWorkspace() {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveResultFiles, setSaveResultFiles] = useState(true);
+  const [loadSavedDetections, setLoadSavedDetections] = useState(false);
   // Selected models can run normally without saving or paying for a baseline.
   const [saveModelResultFiles, setSaveModelResultFiles] = useState(false);
   const [compareModelWithBaseline, setCompareModelWithBaseline] = useState(false);
@@ -358,6 +372,7 @@ export default function ScanbodyWorkspace() {
       setModelRuns([]);
       setComparisonSearch("");
       triangleIdMapsRef.current.clear();
+      setSourceCanvases(new Map());
       originalPositionsRef.current = null;
 
       try {
@@ -439,6 +454,7 @@ export default function ScanbodyWorkspace() {
         const captureElapsedMs = performance.now() - captureStartedAt;
         setCaptureElapsedMs(captureElapsedMs);
         triangleIdMapsRef.current = captures.triangleIdMaps;
+        setSourceCanvases(captures.sourceCanvases);
         setCapturedViews(captures.views);
 
         // Load real JSON files from the project's benchmark-output folder.
@@ -451,7 +467,9 @@ export default function ScanbodyWorkspace() {
           setBaselineRun(savedBaseline);
           setModelRuns(savedModelRuns);
           const displayedRun = savedBaseline ?? savedModelRuns[0];
-          if (displayedRun) {
+          // Keep saved baselines/history available for comparisons, but only
+          // restore an old result into the viewer when explicitly enabled.
+          if (loadSavedDetections && displayedRun) {
             setAnalysis(displayedRun.analysis);
             setSelectedTriangleIds(
               new Set(displayedRun.selectedTriangleIds),
@@ -473,7 +491,7 @@ export default function ScanbodyWorkspace() {
         setBusyLabel(null);
       }
     },
-    [resetViewer],
+    [resetViewer, loadSavedDetections],
   );
 
   const mapAnalysisToTriangles = useCallback((result: AnalysisResult) => {
@@ -486,7 +504,13 @@ export default function ScanbodyWorkspace() {
     const viewEvidence = result.views.flatMap((viewResult) => {
       const triangleIdMap = triangleIdMapsRef.current.get(viewResult.view);
       return triangleIdMap
-        ? [{ detections: viewResult, triangleIdMap }]
+        ? [{ detections: {
+            ...viewResult,
+            detections: viewResult.detections.map((detection) => ({
+              ...detection,
+              outline: scaleOutlinePoints(detection.outline, result.meta.imageSize ?? CAPTURE_SIZE, triangleIdMap.width),
+            })),
+          }, triangleIdMap }]
         : [];
     });
 
@@ -517,7 +541,8 @@ export default function ScanbodyWorkspace() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageSize: CAPTURE_SIZE,
+          imageSize: imageDimension,
+          jpegQuality,
           // The selected run's own save switch controls both its result file and
           // raw-response JSON. Baseline/tooth saving has a separate switch.
           saveFiles: shouldSaveFiles,
@@ -539,7 +564,7 @@ export default function ScanbodyWorkspace() {
                 },
           // Send every captured camera angle. A scanbody that is unclear in one
           // render can be much easier to recognize from another side.
-          views: capturedViews.map((view) => ({
+          views: requestViews.map((view) => ({
             name: view.name,
             image: view.image,
           })),
@@ -673,6 +698,9 @@ export default function ScanbodyWorkspace() {
     baselineParallelViews,
     baselineRun,
     capturedViews,
+    requestViews,
+    imageDimension,
+    jpegQuality,
     comparisonEffort,
     comparisonModel,
     comparisonParallelViews,
@@ -693,7 +721,7 @@ export default function ScanbodyWorkspace() {
   const estimateToothNumbers = useCallback(async () => {
     if (!analysis || !modelInfo || busyLabel || capturedViews.length === 0) return;
     const viewName = chooseToothNumberView(capturedViews.map((view) => view.name), analysis.views, toothViewChoice);
-    const referenceView = capturedViews.find((view) => view.name === viewName);
+    const referenceView = requestViews.find((view) => view.name === viewName);
     const detections = analysis.views.find((view) => view.view === viewName)?.detections ?? [];
     if (!referenceView || detections.length === 0) {
       setError("Tooth numbering needs a teeth-facing image with detected scanbody outlines. Try the other view.");
@@ -708,14 +736,15 @@ export default function ScanbodyWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           meshKey: modelInfo.key, meshName: modelInfo.name,
-          imageSize: CAPTURE_SIZE, useOpenRouter: useOpenRouterBaseline,
+          imageSize: imageDimension, jpegQuality, useOpenRouter: useOpenRouterBaseline,
           saveFiles: saveResultFiles, jawHint: toothJawHint, rightSideHint: toothRightSideHint,
           referenceView: referenceView.name,
           views: [{
             name: referenceView.name, image: referenceView.image,
             detections: detections
               .map((detection, index) => ({
-                detectionId: `${referenceView.name}:${index + 1}`, outline: detection.outline,
+                detectionId: `${referenceView.name}:${index + 1}`,
+                outline: scaleOutlinePoints(detection.outline, analysis.meta.imageSize ?? CAPTURE_SIZE, imageDimension),
               })),
           }],
         }),
@@ -730,7 +759,7 @@ export default function ScanbodyWorkspace() {
     } finally {
       setBusyLabel(null);
     }
-  }, [analysis, modelInfo, busyLabel, capturedViews, useOpenRouterBaseline, saveResultFiles, toothJawHint, toothRightSideHint, toothViewChoice]);
+  }, [analysis, modelInfo, busyLabel, capturedViews, requestViews, imageDimension, jpegQuality, useOpenRouterBaseline, saveResultFiles, toothJawHint, toothRightSideHint, toothViewChoice]);
 
   const showSavedRun = useCallback((run: SavedBenchmarkRun) => {
     if (busyLabel) return;
@@ -779,7 +808,10 @@ export default function ScanbodyWorkspace() {
   );
 
   const detectionsByView = useMemo(
-    () => new Map(analysis?.views.map((view) => [view.view, view.detections]) ?? []),
+    () => new Map(analysis?.views.map((view) => [view.view, view.detections.map((detection) => ({
+      ...detection,
+      outline: scaleOutlinePoints(detection.outline, analysis.meta.imageSize ?? CAPTURE_SIZE, CAPTURE_SIZE),
+    }))]) ?? []),
     [analysis],
   );
   const requestTimesByView = useMemo(
@@ -787,7 +819,7 @@ export default function ScanbodyWorkspace() {
     [analysis],
   );
   const sharedImageRequest = analysis?.meta.viewTimings === null;
-  const previewView = capturedViews.find(
+  const previewView = requestViews.find(
     (view) => view.name === previewViewName,
   );
 
@@ -835,6 +867,19 @@ export default function ScanbodyWorkspace() {
               <FileUp size={16} />
               <h2>Model</h2>
             </div>
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Load saved detections</strong>
+                <small>When choosing an STL · Off: start without highlights</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={loadSavedDetections}
+                disabled={Boolean(busyLabel)}
+                onChange={(event) => setLoadSavedDetections(event.currentTarget.checked)}
+              />
+              <span className={styles.toggleTrack} aria-hidden="true"><span /></span>
+            </label>
             <label
               className={`${styles.uploadButton} ${
                 busyLabel ? styles.uploadDisabled : ""
@@ -1289,6 +1334,34 @@ export default function ScanbodyWorkspace() {
 
           <section className={styles.panelSection}>
             <div className={styles.sectionHeading}>
+              <h2>Image settings</h2>
+            </div>
+            <div className={styles.selectorGrid}>
+              <label>
+                <span>Dimensions</span>
+                <select value={imageDimension} disabled={Boolean(busyLabel)} onChange={(event) => {
+                  setImageDimension(Number(event.currentTarget.value) as ImageDimension);
+                  setToothNumbers(null);
+                }}>
+                  {IMAGE_DIMENSIONS.map((size) => <option key={size} value={size}>{size} × {size}{size === 1024 ? " (default)" : ""}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>JPEG quality</span>
+                <select value={jpegQuality} disabled={Boolean(busyLabel)} onChange={(event) => {
+                  setJpegQuality(Number(event.currentTarget.value) as JpegQuality);
+                  setToothNumbers(null);
+                }}>
+                  {JPEG_QUALITIES.map((quality) => <option key={quality} value={quality}>{quality}%{quality === 90 ? " (default)" : ""}</option>)}
+                </select>
+              </label>
+            </div>
+            <p className={styles.imageSettingsNote}>Applies to the next run. All 8 views are kept.</p>
+            {analysis ? <p className={styles.imageSettingsNote}>Displayed result: {analysis.meta.imageSize ?? CAPTURE_SIZE} × {analysis.meta.imageSize ?? CAPTURE_SIZE} · JPEG {analysis.meta.jpegQuality ?? 90}%</p> : null}
+          </section>
+
+          <section className={styles.panelSection}>
+            <div className={styles.sectionHeading}>
               <Layers3 size={16} />
               <h2>Highlight</h2>
             </div>
@@ -1481,7 +1554,7 @@ export default function ScanbodyWorkspace() {
                 <span>No views yet</span>
               </div>
             ) : (
-              capturedViews.map((view) => (
+              requestViews.map((view) => (
                 <ViewThumbnail
                   key={view.name}
                   view={view}

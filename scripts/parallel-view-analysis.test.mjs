@@ -168,10 +168,10 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
         prompt_tokens_details: { cached_tokens: 10 }, cost: 0.0123 },
     }), { headers: { "Content-Type": "application/json" } });
   });
-  async function analyze(parallelViews, run = { type: "baseline", useOpenRouter: true }) {
+  async function analyze(parallelViews, run = { type: "baseline", useOpenRouter: true }, imageSettings = {}) {
     const response = await POST(new Request("http://offline/api/analyze", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageSize: 1024, saveFiles: false, parallelViews, run, views }),
+      body: JSON.stringify({ imageSize: 1024, ...imageSettings, saveFiles: false, parallelViews, run, views }),
     }));
     const result = await response.json();
     assert.equal(response.status, 200, result.error);
@@ -230,6 +230,14 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
   for (const request of requests.slice(-8)) {
     assert.equal(request.model, "openai/gpt-6.1-terra");
     assert.deepEqual(request.reasoning, { effort: "low" });
+  }
+  const reduced = await analyze(true, { type: "baseline", useOpenRouter: true }, { imageSize: 768, jpegQuality: 70 });
+  assert.equal(reduced.meta.imageSize, 768);
+  assert.equal(reduced.meta.jpegQuality, 70);
+  assert.equal(reduced.meta.viewRequestCount, 8);
+  for (const request of requests.slice(-8)) {
+    assert.match(request.messages[1].content[0].text, /Every image is 768 by 768/);
+    assert.equal(request.messages[1].content.filter((item) => item.type === "image_url").length, 1);
   }
   // Equal bounds restore a fixed point count without contradictory instructions.
   process.env.SCANBODY_OUTLINE_MIN_POINTS = "40";

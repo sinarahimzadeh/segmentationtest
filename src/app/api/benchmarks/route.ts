@@ -28,6 +28,8 @@ const analysisSchema = z.object({
     processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
     parallelViews: z.boolean().optional(),
     viewRequestCount: z.number().int().positive().optional(),
+    imageSize: z.number().int().min(256).max(2048).optional(),
+    jpegQuality: z.number().int().min(1).max(100).optional(),
     viewTimings: z.array(z.object({
       view: z.string().min(1),
       elapsedMs: z.number().finite().nonnegative(),

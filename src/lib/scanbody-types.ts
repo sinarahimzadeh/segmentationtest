@@ -27,6 +27,9 @@ export type AnalysisResult = {
     processingSpeed?: ProcessingSpeed;
     parallelViews?: boolean;
     viewRequestCount?: number;
+    // Actual API image settings. Legacy files used 1024 pixels and JPEG 90%.
+    imageSize?: number;
+    jpegQuality?: number;
     // One entry per individually requested image. Null means a shared request;
     // absent means this older result did not record per-image measurements.
     viewTimings?: { view: string; elapsedMs: number }[] | null;

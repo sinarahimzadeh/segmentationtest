@@ -46,6 +46,22 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Model runs and benchmark
 
+**Image settings**, below the model-runs table and above Highlight, controls
+all subsequent baseline, selected-model, and tooth-numbering requests.
+Dimensions: **1024×1024** (default), 896×896, 768×768, 640×640, 512×512,
+or 384×384. JPEG quality: **90%** (default), 80%, 70%, 60%, 50%, 40%, or 30%.
+Changing either dropdown updates the camera
+previews locally; it does not make an API call. All eight segmentation views,
+camera angles, lighting, model and thinking settings stay the same.
+
+Every option is encoded directly from original render pixels, so repeated
+setting changes do not accumulate JPEG compression. The 3D triangle-ID maps
+remain at 1024×1024, and returned outlines are scaled to match them. Saved
+results record `analysis.meta.imageSize` and `analysis.meta.jpegQuality`;
+outlines in those files use that run's image dimensions. Older results without
+these fields use 1024×1024 and 90%. Changing settings does not rerun or alter a
+displayed result; click the relevant run button to measure the new settings.
+
 Choose an STL, then select any model and thinking level under **Run another
 model**. **Compare with Sol Medium** and **Save selected model results** both
 default to off. Click **Run segmentation** to use the model without creating

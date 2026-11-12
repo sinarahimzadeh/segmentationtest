@@ -174,6 +174,9 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
   const halfSize = Math.max(sphere.radius * 1.12, 1);
   const far = Math.max(sphere.radius * 12, 100);
   const triangleIdMaps = new Map<string, TriangleIdMap>();
+  // Keep lossless render pixels locally for the dimension/quality selectors.
+  // These canvases are never sent to an API or written into benchmark files.
+  const sourceCanvases = new Map<string, HTMLCanvasElement>();
   const views: CapturedView[] = [];
 
   for (const view of VIEW_CONFIGS) {
@@ -226,6 +229,13 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
     visualMesh.visible = true;
     triangleIdMesh.visible = false;
     renderer.render(scene, camera);
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = CAPTURE_SIZE;
+    sourceCanvas.height = CAPTURE_SIZE;
+    const sourceContext = sourceCanvas.getContext("2d");
+    if (!sourceContext) throw new Error("Could not keep the original camera image.");
+    sourceContext.drawImage(renderer.domElement, 0, 0);
+    sourceCanvases.set(view.name, sourceCanvas);
     views.push({
       name: view.name,
       label: view.label,
@@ -250,6 +260,6 @@ export function captureModelViews(geometry: THREE.BufferGeometry) {
   triangleIdGeometry.dispose();
   triangleIdTarget.dispose();
   renderer.dispose();
-  return { views, triangleIdMaps };
+  return { views, triangleIdMaps, sourceCanvases };
 }
 

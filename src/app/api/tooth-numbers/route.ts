@@ -15,6 +15,7 @@ const requestSchema = z.object({
   meshKey: z.string().regex(/^[a-f0-9]{64}$/),
   meshName: z.string().min(1).max(500),
   imageSize: z.number().int().min(256).max(2048),
+  jpegQuality: z.number().int().min(1).max(100).default(90),
   useOpenRouter: z.boolean().default(true),
   saveFiles: z.boolean().default(true),
   jawHint: z.enum(JAW_HINTS).default("auto"),
@@ -86,6 +87,7 @@ export async function POST(request: Request) {
       meta: {
         modelLabel: getModelRunLabel(selection.model, "medium"),
         imageCount: 1, viewNames: [referenceView.name],
+        imageSize: body.imageSize, jpegQuality: body.jpegQuality,
         elapsedMs: Math.round(performance.now() - startedAt), inputTokens, outputTokens,
         estimatedCostUsd: receipt.reportedCostUsd ?? estimatePaidCostUsd({
           modelId: selection.model, inputTokens, outputTokens,

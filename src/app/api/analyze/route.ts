@@ -44,6 +44,7 @@ type MistralEffort = Extract<ReasoningEffort, "none" | "low" | "medium" | "high"
 
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
+  jpegQuality: z.number().int().min(1).max(100).default(90),
   saveFiles: z.boolean().optional().default(true),
   // Older clients keep grouped requests unless they explicitly opt in.
   parallelViews: z.boolean().default(false),
@@ -578,6 +579,10 @@ export async function POST(request: Request) {
         parallelViews: body.parallelViews,
         viewRequestCount,
         viewTimings,
+        // Outlines use this input image's coordinates; the browser scales them
+        // to its fixed 1024-pixel ID map and overlays before local processing.
+        imageSize: body.imageSize,
+        jpegQuality: body.jpegQuality,
         // Keep the old field as the configured ceiling for existing consumers.
         outlinePointsPerScanbody: outlinePointRange.max,
         outlineMinPointsPerScanbody: outlinePointRange.min,

@@ -19,6 +19,8 @@ export type ToothNumberResult = {
   meta: {
     modelLabel: string;
     imageCount?: number;
+    imageSize?: number;
+    jpegQuality?: number;
     viewNames?: string[];
     elapsedMs: number;
     inputTokens: number | null;

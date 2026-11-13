@@ -1169,7 +1169,7 @@ export default function ScanbodyWorkspace() {
                 >
                   {comparisonModelOption.comparisonEfforts.map((effort) => (
                     <option key={effort} value={effort}>
-                      {effort[0].toUpperCase() + effort.slice(1)}
+                      {effort === "xhigh" ? "XHigh" : effort[0].toUpperCase() + effort.slice(1)}
                     </option>
                   ))}
                 </select>

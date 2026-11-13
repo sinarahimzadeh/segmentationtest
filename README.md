@@ -50,6 +50,14 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Model runs and benchmark
 
+**Gemini 4 Hydrogen** is available under Google Gemini with **Low, Medium,
+High, and XHigh** thinking. It uses the existing `GOOGLE_API_KEY` through
+LangChain, the same segmentation prompt, and the selected image/outline and
+parallel settings. Its estimate uses Google's Standard paid rates: $1.50/M
+input tokens, $0.075/M cached input tokens, and $7.50/M output tokens including
+thinking. See [Google pricing](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen)
+and [supported settings](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-4-hydrogen).
+
 **Image settings**, below the model-runs table and above Highlight, controls
 all subsequent baseline, selected-model, and tooth-numbering requests.
 Dimensions: **1024×1024** (default), 896×896, 768×768, 640×640, 512×512,

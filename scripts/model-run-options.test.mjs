@@ -256,4 +256,12 @@ test("standalone results save/load without a baseline and survive baseline repla
   assert.deepEqual((await get()).map((value) => value.kind).sort(), ["baseline", "standalone"]);
   assert.equal(files.get(standalonePath), standaloneBytes);
   assert.equal((await post({ ...run, metrics })).status, 400);
+  const hydrogenRun = { ...run, id: "hydrogen-xhigh", model: "gemini-4-hydrogen", reasoningEffort: "xhigh",
+    analysis: { ...run.analysis, meta: { ...run.analysis.meta, model: "gemini-4-hydrogen", provider: "google",
+      modelLabel: "Gemini 4 Hydrogen · XHigh", reasoningEffort: "xhigh" } } };
+  assert.equal((await post(hydrogenRun)).status, 200);
+  const hydrogenSaved = (await get()).find((value) => value.id === hydrogenRun.id);
+  assert.equal(hydrogenSaved.model, "gemini-4-hydrogen");
+  assert.equal(hydrogenSaved.reasoningEffort, "xhigh");
+  assert.equal(hydrogenSaved.analysis.meta.reasoningEffort, "xhigh");
 });

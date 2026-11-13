@@ -19,6 +19,90 @@ const resultFor = (batch, overrides = {}) => ({
   ...overrides,
 });
 
+test("Hydrogen sends images at every documented thinking level and includes thinking in its cost", async (t) => {
+  const previousKey = process.env.GOOGLE_API_KEY;
+  process.env.GOOGLE_API_KEY = "offline-google-key";
+  t.after(() => {
+    if (previousKey === undefined) delete process.env.GOOGLE_API_KEY;
+    else process.env.GOOGLE_API_KEY = previousKey;
+  });
+  const POST = loadRoute();
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.match(String(url), /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-(4-hydrogen|4-argon|3\.8-flash):generateContent$/);
+    const body = JSON.parse(init.body);
+    const parts = body.contents.flatMap((content) => content.parts);
+    const ids = parts.filter((part) => part.text?.startsWith("VIEW_ID: ")).map((part) => part.text.slice(9));
+    const usage = { promptTokenCount: ids.length * 100, cachedContentTokenCount: ids.length * 10,
+      candidatesTokenCount: ids.length * 20, thoughtsTokenCount: ids.length * 30, totalTokenCount: ids.length * 150 };
+    requests.push({ body, usage });
+    return new Response(JSON.stringify({
+      candidates: [{ index: 0, finishReason: "STOP", content: { role: "model", parts: [{ text: JSON.stringify({
+        views: ids.map((view) => ({ view, detections: [{ label: "scanbody", outline: "10,10 20,10 20,20", confidence: 0.9 }] })),
+      }) }] } }], usageMetadata: usage,
+    }), { headers: { "Content-Type": "application/json" } });
+  });
+  const call = async (model, effort, parallelViews) => {
+    const response = await POST(new Request("http://offline/api/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageSize: 768, jpegQuality: 80, outlineMinPoints: 3, outlineMaxPoints: 14,
+        saveFiles: false, parallelViews,
+        run: { type: "standalone", model, reasoningEffort: effort }, views }),
+    }));
+    return { status: response.status, result: await response.json() };
+  };
+  let referencePrompt;
+  for (const effort of ["low", "medium", "high", "xhigh"]) {
+    for (const parallelViews of [false, true]) {
+      const before = requests.length;
+      const { status, result } = await call("gemini-4-hydrogen", effort, parallelViews);
+      assert.equal(status, 200, result.error);
+      assert.equal(result.meta.model, "gemini-4-hydrogen");
+      assert.equal(result.meta.provider, "google");
+      assert.equal(result.meta.reasoningEffort, effort);
+      assert.equal(result.meta.imageSize, 768);
+      assert.equal(result.meta.jpegQuality, 80);
+      assert.equal(result.meta.outlineMaxPointsPerScanbody, 14);
+      assert.equal(result.meta.viewRequestCount, parallelViews ? 8 : 1);
+      assert.deepEqual(result.views.map((view) => view.view), views.map((view) => view.name));
+      const sent = requests.slice(before);
+      assert.equal(sent.length, parallelViews ? 8 : 1);
+      for (const { body } of sent) {
+        assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, effort.toUpperCase());
+        assert.equal(body.generationConfig.maxOutputTokens, 65536);
+        assert.equal(body.generationConfig.responseMimeType, "application/json");
+        assert(body.generationConfig.responseSchema);
+        assert.doesNotMatch(JSON.stringify(body.generationConfig.responseSchema), /"const":/);
+        const parts = body.contents.flatMap((content) => content.parts);
+        const images = parts.filter((part) => part.inlineData);
+        assert.equal(images.length, parallelViews ? 1 : 8, "Gemini 4 must receive images, not just the text prompt");
+        assert(images.every((part) => part.inlineData.mimeType === "image/jpeg"));
+        assert.match(parts[0].text, /768 by 768/);
+        assert.match(parts[0].text, /between 3 and 14/);
+        referencePrompt ??= body.systemInstruction;
+        assert.deepEqual(body.systemInstruction, referencePrompt);
+      }
+      assert.equal(result.meta.inputTokens, 800);
+      assert.equal(result.meta.cachedInputTokens, 80);
+      assert.equal(result.meta.outputTokens, 400, "160 visible + 240 thinking tokens are all billable output");
+      assert(Math.abs(result.meta.estimatedCostUsd - (720 * 1.5 + 80 * 0.075 + 400 * 7.5) / 1_000_000) < 1e-12);
+      if (effort === "xhigh") assert.match(result.meta.modelLabel, /XHigh/);
+    }
+  }
+  // Existing Google models retain their existing levels and integration path.
+  for (const model of ["gemini-4-argon", "gemini-3.8-flash"]) {
+    const { status, result } = await call(model, "medium", false);
+    assert.equal(status, 200, result.error);
+    assert.equal(result.meta.outputTokens, 160);
+    assert.equal(requests.at(-1).body.generationConfig.thinkingConfig.thinkingLevel, "MEDIUM");
+  }
+  const beforeInvalid = requests.length;
+  for (const [model, effort] of [["gemini-4-hydrogen", "minimal"], ["gemini-4-argon", "xhigh"], ["gpt-6.1-terra", "xhigh"]]) {
+    assert.equal((await call(model, effort, true)).status, 400);
+  }
+  assert.equal(requests.length, beforeInvalid, "unsupported thinking levels must not reach any provider");
+});
+
 test("all eight start together; reverse completion preserves view order, individual times and totals", async (t) => {
   let clockNow = 0;
   t.mock.method(performance, "now", () => clockNow);

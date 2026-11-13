@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { AI_MODEL_IDS, PROCESSING_SPEEDS } from "@/lib/ai-models";
+import { AI_MODEL_IDS, PROCESSING_SPEEDS, REASONING_EFFORTS } from "@/lib/ai-models";
 
 const meshKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
 const pointSchema = z.tuple([z.number(), z.number()]);
@@ -24,7 +24,7 @@ const analysisSchema = z.object({
     modelLabel: z.string(),
     provider: z.enum(["openai", "xai", "google", "anthropic", "mistral", "openrouter"]).default("openai"),
     integration: z.enum(["langchain", "anthropic-sdk"]).optional(),
-    reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
+    reasoningEffort: z.enum(REASONING_EFFORTS),
     processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
     parallelViews: z.boolean().optional(),
     viewRequestCount: z.number().int().positive().optional(),
@@ -70,7 +70,7 @@ const savedRunSchema = z.object({
   meshFolderName: z.string().min(1).max(500).optional(),
   kind: z.enum(["baseline", "comparison", "standalone"]),
   model: z.enum(AI_MODEL_IDS),
-  reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
+  reasoningEffort: z.enum(REASONING_EFFORTS),
   processingSpeed: z.enum(PROCESSING_SPEEDS).optional(),
   createdAt: z.string(),
   analysis: analysisSchema,

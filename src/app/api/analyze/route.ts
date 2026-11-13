@@ -1,4 +1,4 @@
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage, isAIMessage } from "@langchain/core/messages";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
@@ -14,6 +14,7 @@ import { createOpenRouterReceiptFetch, getOpenRouterSpeedRouting, type OpenRoute
 import {
   AI_MODEL_IDS,
   PROCESSING_SPEEDS,
+  REASONING_EFFORTS,
   getBaselineSelection,
   estimatePaidCostUsd,
   getAiModelOption,
@@ -29,15 +30,52 @@ import {
 /**
  * @langchain/google-genai 2.3.4 predates Gemini 4 and its internal multimodal
  * check only recognizes model names through `gemini-3`. Google officially
- * supports image input for Gemini 4 Argon, so extend that check locally until
+ * supports image input for Gemini 4 Argon and Hydrogen, so extend it locally until
  * LangChain adds Gemini 4 to its own model-name matcher.
  */
 class CurrentGeminiChatModel extends ChatGoogleGenerativeAI {
+  private hydrogenThinkingTokens = 0;
+
   override get _isMultimodalModel() {
     return this.model.startsWith("gemini-4") || super._isMultimodalModel;
   }
+
+  override async completionWithRetry(...args: Parameters<ChatGoogleGenerativeAI["completionWithRetry"]>) {
+    const result = await super.completionWithRetry(...args);
+    if (this.model === "gemini-4-hydrogen") {
+      // The installed SDK's types predate this usage field, but the API returns
+      // it. Keep the original response unchanged and account for it below.
+      const usage = result.response.usageMetadata as { thoughtsTokenCount?: number } | undefined;
+      this.hydrogenThinkingTokens = usage?.thoughtsTokenCount ?? 0;
+    }
+    return result;
+  }
+
+  override async _generate(...args: Parameters<ChatGoogleGenerativeAI["_generate"]>) {
+    const result = await super._generate(...args);
+    // LangChain 2.3.4 counts only candidatesTokenCount. Hydrogen also bills its
+    // thinking tokens as output. Fix the new model's receipt without changing
+    // other models' request settings or rewriting their saved results.
+    if (this.model === "gemini-4-hydrogen" && this.hydrogenThinkingTokens > 0) {
+      for (const generation of result.generations) {
+        const message = generation.message;
+        if (isAIMessage(message) && message.usage_metadata) {
+          message.usage_metadata = {
+            ...message.usage_metadata,
+            output_tokens: message.usage_metadata.output_tokens + this.hydrogenThinkingTokens,
+            output_token_details: {
+              ...message.usage_metadata.output_token_details,
+              reasoning: this.hydrogenThinkingTokens,
+            },
+          };
+        }
+      }
+    }
+    return result;
+  }
 }
 
+type GeminiThinkingLevel = NonNullable<ChatGoogleGenerativeAI["thinkingConfig"]>["thinkingLevel"];
 type ClaudeModelId = Extract<AiModelId, `claude-${string}`>;
 type ClaudeEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 type MistralEffort = Extract<ReasoningEffort, "none" | "low" | "medium" | "high">;
@@ -62,7 +100,7 @@ const requestSchema = z.object({
       // Standalone runs use the same model settings without requiring a baseline.
       type: z.enum(["comparison", "standalone"]),
       model: z.enum(AI_MODEL_IDS),
-      reasoningEffort: z.enum(["default", "none", "minimal", "low", "medium", "high"]),
+      reasoningEffort: z.enum(REASONING_EFFORTS),
       processingSpeed: z.enum(PROCESSING_SPEEDS).default("standard"),
     }),
   ]),
@@ -329,12 +367,10 @@ export async function POST(request: Request) {
                 maxRetries: 1,
                 maxOutputTokens: 65_536,
                 thinkingConfig: {
-                  // The installed LangChain type has not yet added MINIMAL, but the
-                  // current Gemini API supports it for Flash-Lite.
-                  thinkingLevel: selection.reasoningEffort.toUpperCase() as
-                    | "LOW"
-                    | "MEDIUM"
-                    | "HIGH",
+                  // The SDK's type predates MINIMAL and Hydrogen's XHIGH. Pass
+                  // the documented API value unchanged; the model whitelist
+                  // above prevents unsupported levels on other Gemini models.
+                  thinkingLevel: selection.reasoningEffort.toUpperCase() as GeminiThinkingLevel,
                 },
               }).withStructuredOutput(detectionSchema, {
                 name: "scanbody_roi_detection",

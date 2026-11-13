@@ -7,6 +7,7 @@ export const AI_MODEL_IDS = [
   "grok-4.7",
   "grok-4.6",
   "grok-4.3",
+  "gemini-4-hydrogen",
   "gemini-4-argon",
   "gemini-3.8-flash",
   "gemini-3.1-pro-preview",
@@ -39,7 +40,8 @@ export const AI_MODEL_IDS = [
 
 export type AiModelId = (typeof AI_MODEL_IDS)[number];
 export type AiProvider = "openai" | "xai" | "google" | "anthropic" | "mistral" | "openrouter";
-export type ReasoningEffort = "default" | "none" | "minimal" | "low" | "medium" | "high";
+export const REASONING_EFFORTS = ["default", "none", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export const PROCESSING_SPEEDS = ["standard", "fast", "ultrafast"] as const;
 export type ProcessingSpeed = (typeof PROCESSING_SPEEDS)[number];
 
@@ -130,6 +132,18 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     inputPricePerMillionTokens: 1.25,
     cachedInputPricePerMillionTokens: 0.2,
     outputPricePerMillionTokens: 2.5,
+  },
+  {
+    id: "gemini-4-hydrogen",
+    provider: "google",
+    label: "Gemini 4 Hydrogen",
+    comparisonEfforts: ["low", "medium", "high", "xhigh"],
+    // Google Standard paid rates, verified November 13, 2026:
+    // https://aistudio.google.com/docs/pricing#gemini-4-hydrogen
+    // Output pricing includes thinking tokens; implicit cache reads cost 5%.
+    inputPricePerMillionTokens: 1.5,
+    cachedInputPricePerMillionTokens: 0.075,
+    outputPricePerMillionTokens: 7.5,
   },
   {
     id: "gemini-4-argon",
@@ -428,7 +442,7 @@ export function getModelRunLabel(
   processingSpeed: ProcessingSpeed = "standard",
 ) {
   return `${getAiModelOption(modelId).label} · ${
-    reasoningEffort[0].toUpperCase() + reasoningEffort.slice(1)
+    reasoningEffort === "xhigh" ? "XHigh" : reasoningEffort[0].toUpperCase() + reasoningEffort.slice(1)
   }${processingSpeed === "standard" ? "" : ` · ${getProcessingSpeedLabel(processingSpeed)}`}`;
 }
 

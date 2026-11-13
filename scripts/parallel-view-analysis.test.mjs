@@ -156,7 +156,12 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
       choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({
         views: ids.map((view) => {
           // Simulate a short simple outline and a longer detailed outline.
-          const count = Number(view.slice("view-".length)) % 2 === 0 ? 16 : 40;
+          const prompt = body.messages[0].content;
+          const range = /between (\d+) and (\d+)/.exec(prompt);
+          const fixedCount = /exactly (\d+)/.exec(prompt);
+          const count = range
+            ? Number(range[Number(view.slice("view-".length)) % 2 === 0 ? 1 : 2])
+            : Number(fixedCount[1]);
           const outline = Array.from({ length: count }, (_, index) => {
             const angle = index * Math.PI * 2 / count;
             return `${Math.round(100 + 30 * Math.cos(angle))},${Math.round(100 + 30 * Math.sin(angle))}`;
@@ -245,6 +250,31 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
   assert.match(requests.at(-1).messages[0].content, /exactly 40/);
   assert.doesNotMatch(requests.at(-1).messages[0].content, /fewest points|do not pad/);
   assert.equal(fixed.meta.outlineMinPointsPerScanbody, 40);
+  // UI settings override both environment defaults in every parallel request.
+  const custom = await analyze(true, { type: "standalone", model: "openrouter-gpt-6.1-terra", reasoningEffort: "low" },
+    { outlineMinPoints: 3, outlineMaxPoints: 8 });
+  assert.equal(custom.meta.outlineMinPointsPerScanbody, 3);
+  assert.equal(custom.meta.outlineMaxPointsPerScanbody, 8);
+  assert.deepEqual(custom.views.map((view) => view.detections[0].outline.length), [3, 8, 3, 8, 3, 8, 3, 8]);
+  for (const request of requests.slice(-8)) {
+    assert.match(request.messages[0].content, /between 3 and 8/);
+    assert.match(request.messages[1].content[0].text, /between 3 and 8/);
+    assert.match(JSON.stringify(request.response_format), /between 3 and 8/);
+  }
+  const fixedUi = await analyze(false, { type: "baseline", useOpenRouter: true }, { outlineMinPoints: 8, outlineMaxPoints: 8 });
+  assert.match(requests.at(-1).messages[0].content, /exactly 8/);
+  assert.doesNotMatch(requests.at(-1).messages[0].content, /fewest points|do not pad/);
+  assert.equal(fixedUi.meta.outlineMaxPointsPerScanbody, 8);
+  const beforeInvalidBounds = requests.length;
+  for (const bounds of [{ outlineMinPoints: 16, outlineMaxPoints: 8 }, { outlineMinPoints: 2, outlineMaxPoints: 40 },
+    { outlineMinPoints: 3, outlineMaxPoints: 10001 }, { outlineMinPoints: 3.5, outlineMaxPoints: 40 }]) {
+    const invalidBounds = await POST(new Request("http://offline/api/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageSize: 1024, saveFiles: false, run: { type: "baseline", useOpenRouter: true }, views, ...bounds }),
+    }));
+    assert.equal(invalidBounds.status, 400);
+  }
+  assert.equal(requests.length, beforeInvalidBounds);
   // Reject invalid settings before any potentially paid provider request.
   process.env.SCANBODY_OUTLINE_MIN_POINTS = "41";
   const callsBefore = requests.length;

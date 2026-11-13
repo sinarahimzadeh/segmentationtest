@@ -45,6 +45,9 @@ type MistralEffort = Extract<ReasoningEffort, "none" | "low" | "medium" | "high"
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
   jpegQuality: z.number().int().min(1).max(100).default(90),
+  // Optional for old clients. The UI sends both bounds for each new run.
+  outlineMinPoints: z.number().int().min(3).max(10_000).optional(),
+  outlineMaxPoints: z.number().int().min(3).max(10_000).optional(),
   saveFiles: z.boolean().optional().default(true),
   // Older clients keep grouped requests unless they explicitly opt in.
   parallelViews: z.boolean().default(false),
@@ -109,10 +112,14 @@ const DEFAULT_MIN_OUTLINE_POINTS_PER_SCANBODY = 16;
 const MAX_OUTLINE_POINTS_PER_SCANBODY = 10_000;
 type OutlinePointRange = { min: number; max: number };
 
-function getOutlinePointRange(): OutlinePointRange {
-  // The existing setting is now the maximum, rather than a mandatory count.
+function getOutlinePointRange(overrides: {
+  outlineMinPoints?: number;
+  outlineMaxPoints?: number;
+} = {}): OutlinePointRange {
+  // Per-run UI settings take precedence. Environment settings remain the
+  // fallback for old clients that do not send outline bounds.
   const pointCount = Number(
-    process.env.SCANBODY_OUTLINE_POINTS ??
+    overrides.outlineMaxPoints ?? process.env.SCANBODY_OUTLINE_POINTS ??
       DEFAULT_OUTLINE_POINTS_PER_SCANBODY,
   );
 
@@ -127,12 +134,14 @@ function getOutlinePointRange(): OutlinePointRange {
   }
 
   const minimum = Number(
-    process.env.SCANBODY_OUTLINE_MIN_POINTS ??
+    overrides.outlineMinPoints ?? process.env.SCANBODY_OUTLINE_MIN_POINTS ??
       Math.min(DEFAULT_MIN_OUTLINE_POINTS_PER_SCANBODY, pointCount),
   );
   if (!Number.isInteger(minimum) || minimum < 3 || minimum > pointCount) {
     throw new Error(
-      "SCANBODY_OUTLINE_MIN_POINTS must be a whole number from 3 to SCANBODY_OUTLINE_POINTS.",
+      overrides.outlineMinPoints !== undefined || overrides.outlineMaxPoints !== undefined
+        ? "Minimum outline points must be a whole number from 3 to the maximum outline points."
+        : "SCANBODY_OUTLINE_MIN_POINTS must be a whole number from 3 to SCANBODY_OUTLINE_POINTS.",
     );
   }
   return { min: minimum, max: pointCount };
@@ -236,7 +245,7 @@ present. Never invent a detection when no manufactured post is visible.`;
 export async function POST(request: Request) {
   try {
     const body = requestSchema.parse(await request.json());
-    const outlinePointRange = getOutlinePointRange();
+    const outlinePointRange = getOutlinePointRange(body);
     const detectionSchema = createDetectionSchema(outlinePointRange);
     const selection = resolveModelSelection(body.run);
     // Honor the baseline provider toggle even if that provider's key fails.

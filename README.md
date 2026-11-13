@@ -29,7 +29,11 @@ The AI chooses the number of outline points separately for each scanbody in
 each image: fewer for simple boundaries, more for detailed ones. The default
 range is **16–40 points**. `SCANBODY_OUTLINE_POINTS` sets the maximum (`3` to
 `10000`), and `SCANBODY_OUTLINE_MIN_POINTS` sets the minimum (`3` to the maximum).
-Set both to `40` to restore a fixed count. Restart the app after editing them.
+The **Outline points** inputs above Image settings override these environment
+defaults for each baseline or selected-model segmentation run. Leave the minimum
+blank to allow as few as 3 points, and enter the desired maximum. Set both to
+the same number for a fixed count. UI changes need no restart; restart only when
+changing the environment defaults used by clients without these inputs.
 These settings apply to every provider, in grouped and parallel mode. Saved
 results record the requested minimum and maximum; each outline array contains
 the actual returned points. This may reduce output and time, but the quality

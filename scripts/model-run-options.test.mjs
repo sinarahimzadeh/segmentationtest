@@ -42,13 +42,14 @@ function loadRunAnalysis(context, callbackName = "runAnalysis") {
   return loadedModule.exports;
 }
 
-function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90) {
+function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90, outlineInputs = { min: "16", max: "40" }) {
   const state = { requests: [], saves: [], modelRuns: [], error: null };
   const clock = { elapsed: 0 };
   const context = {
     capturedViews: Array.from({ length: 8 }, (_, index) => ({ name: `view-${index}`, image: `data:image/jpeg;base64,${index}` })),
     requestViews: Array.from({ length: 8 }, (_, index) => ({ name: `view-${index}`, image: `data:image/jpeg;base64,selected-${imageDimension}-${jpegQuality}-${index}` })),
     imageDimension, jpegQuality,
+    outlineMinPointsInput: outlineInputs.min, outlineMaxPointsInput: outlineInputs.max,
     baselineRun: existingBaseline,
     saveResultFiles: !save, saveModelResultFiles: save,
     baselineParallelViews: true, comparisonParallelViews: true,
@@ -68,7 +69,9 @@ function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90)
       assert.equal(url, "/api/analyze");
       state.requests.push(JSON.parse(options.body));
       clock.elapsed += 5000;
-      return new Response(JSON.stringify({ ...analysis, meta: { ...analysis.meta, imageSize: imageDimension, jpegQuality } }));
+      const request = state.requests.at(-1);
+      return new Response(JSON.stringify({ ...analysis, meta: { ...analysis.meta, imageSize: imageDimension, jpegQuality,
+        outlineMinPointsPerScanbody: request.outlineMinPoints, outlineMaxPointsPerScanbody: request.outlineMaxPoints } }));
     },
     saveBenchmarkFile: async (run) => { state.saves.push(run); return `${run.kind}.json`; },
     setModelRuns: (update) => { state.modelRuns = typeof update === "function" ? update(state.modelRuns) : update; },
@@ -94,6 +97,8 @@ test("all four save/compare combinations use the selected model's own save setti
       assert.equal(state.requests[0].views.length, 8);
       assert.equal(state.requests[0].imageSize, 1024);
       assert.equal(state.requests[0].jpegQuality, 90);
+      assert.equal(state.requests[0].outlineMinPoints, 16);
+      assert.equal(state.requests[0].outlineMaxPoints, 40);
       assert.equal(state.saves.length, save ? 1 : 0);
       assert.equal(state.modelRuns[0].kind, kind);
       assert.equal(state.modelRuns[0].metrics === null, !compare);
@@ -136,6 +141,33 @@ test("comparison off ignores an existing baseline; comparison on alone requires 
   await comparison.run("comparison");
   assert.equal(comparison.state.requests.length, 0);
   assert.match(comparison.state.error, /baseline first/);
+});
+
+test("outline inputs apply to baseline, comparison and standalone runs; a blank minimum means three points", async () => {
+  for (const kind of ["baseline", "comparison", "standalone"]) {
+    for (const inputs of [{ min: "", max: "8" }, { min: "6", max: "12" }, { min: "8", max: "8" }]) {
+      const { state, run } = client(kind !== "baseline", kind === "comparison" ? baseline : null, 1024, 90, inputs);
+      await run(kind);
+      assert.equal(state.error, null);
+      assert.equal(state.requests.length, 1);
+      const minimum = inputs.min === "" ? 3 : Number(inputs.min);
+      assert.equal(state.requests[0].outlineMinPoints, minimum);
+      assert.equal(state.requests[0].outlineMaxPoints, Number(inputs.max));
+      assert.equal(state.saves[0].analysis.meta.outlineMinPointsPerScanbody, minimum);
+      assert.equal(state.saves[0].analysis.meta.outlineMaxPointsPerScanbody, Number(inputs.max));
+    }
+  }
+});
+
+test("invalid outline bounds cannot start a paid request", async () => {
+  for (const inputs of [{ min: "16", max: "8" }, { min: "2", max: "40" },
+    { min: "3.5", max: "40" }, { min: "3", max: "10001" }, { min: "", max: "" }]) {
+    const { state, run } = client(false, null, 1024, 90, inputs);
+    await run("standalone");
+    assert.match(state.error, /Outline points/);
+    assert.equal(state.requests.length, 0);
+    assert.equal(state.saves.length, 0);
+  }
 });
 
 test("tooth numbering rescales an existing result to the newly selected image dimensions", async () => {

@@ -173,6 +173,10 @@ export default function ScanbodyWorkspace() {
   const [sourceCanvases, setSourceCanvases] = useState<ReadonlyMap<string, HTMLCanvasElement>>(() => new Map());
   const [imageDimension, setImageDimension] = useState<ImageDimension>(1024);
   const [jpegQuality, setJpegQuality] = useState<JpegQuality>(90);
+  // Keep editable strings so clearing an input does not silently become zero.
+  // A blank minimum removes the extra floor; a polygon still needs 3 points.
+  const [outlineMinPointsInput, setOutlineMinPointsInput] = useState("16");
+  const [outlineMaxPointsInput, setOutlineMaxPointsInput] = useState("40");
   // Only the outgoing images change. PCA, cameras and 1024-pixel ID maps stay
   // fixed, so comparisons always refer to the same original STL triangles.
   const requestViews = useMemo(
@@ -531,6 +535,14 @@ export default function ScanbodyWorkspace() {
       setError("Run the Sol Medium baseline first.");
       return;
     }
+    const outlineMinPoints = outlineMinPointsInput.trim() === "" ? 3 : Number(outlineMinPointsInput);
+    const outlineMaxPoints = Number(outlineMaxPointsInput);
+    // Reject invalid settings before making any potentially paid request.
+    if (!Number.isInteger(outlineMinPoints) || !Number.isInteger(outlineMaxPoints) ||
+        outlineMinPoints < 3 || outlineMaxPoints > 10_000 || outlineMinPoints > outlineMaxPoints) {
+      setError("Outline points must be whole numbers from 3 to 10000, with minimum no greater than maximum. The maximum is required.");
+      return;
+    }
     const shouldSaveFiles = runKind === "baseline" ? saveResultFiles : saveModelResultFiles;
     setBusyLabel("Finding scanbodies");
     setError(null);
@@ -543,6 +555,8 @@ export default function ScanbodyWorkspace() {
         body: JSON.stringify({
           imageSize: imageDimension,
           jpegQuality,
+          outlineMinPoints,
+          outlineMaxPoints,
           // The selected run's own save switch controls both its result file and
           // raw-response JSON. Baseline/tooth saving has a separate switch.
           saveFiles: shouldSaveFiles,
@@ -701,6 +715,8 @@ export default function ScanbodyWorkspace() {
     requestViews,
     imageDimension,
     jpegQuality,
+    outlineMinPointsInput,
+    outlineMaxPointsInput,
     comparisonEffort,
     comparisonModel,
     comparisonParallelViews,
@@ -1330,6 +1346,27 @@ export default function ScanbodyWorkspace() {
                 label="Triangle mapping"
               />
             </div>
+          </section>
+
+          <section className={styles.panelSection}>
+            <div className={styles.sectionHeading}>
+              <h2>Outline points</h2>
+            </div>
+            <div className={styles.selectorGrid}>
+              <label>
+                <span>Minimum points</span>
+                <input type="number" min={3} max={10_000} step={1} placeholder="3"
+                  value={outlineMinPointsInput} disabled={Boolean(busyLabel)}
+                  onChange={(event) => setOutlineMinPointsInput(event.currentTarget.value)} />
+              </label>
+              <label>
+                <span>Maximum points</span>
+                <input type="number" min={3} max={10_000} step={1} required
+                  value={outlineMaxPointsInput} disabled={Boolean(busyLabel)}
+                  onChange={(event) => setOutlineMaxPointsInput(event.currentTarget.value)} />
+              </label>
+            </div>
+            <p className={styles.imageSettingsNote}>Per scanbody outline. Leave minimum blank to allow as few as 3 points. Applies to the next segmentation run.</p>
           </section>
 
           <section className={styles.panelSection}>

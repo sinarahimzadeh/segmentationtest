@@ -415,6 +415,7 @@
 }
 
 .selectorGrid select,
+.selectorGrid input[type="number"],
 .speedSelector select {
   min-width: 0;
   height: 34px;
@@ -428,6 +429,7 @@
 }
 
 .selectorGrid select:disabled,
+.selectorGrid input[type="number"]:disabled,
 .speedSelector select:disabled {
   opacity: 0.5;
 }

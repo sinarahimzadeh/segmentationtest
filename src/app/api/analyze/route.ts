@@ -624,6 +624,9 @@ export async function POST(request: Request) {
         parallelViews: body.parallelViews,
         viewRequestCount,
         viewTimings,
+        // Record the actual submitted views, not the eight locally captured
+        // views. This also records empty-detection views in grouped mode.
+        selectedViews: body.views.map((view) => view.name),
         // Outlines use this input image's coordinates; the browser scales them
         // to its fixed 1024-pixel ID map and overlays before local processing.
         imageSize: body.imageSize,

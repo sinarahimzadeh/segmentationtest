@@ -27,6 +27,8 @@ export type AnalysisResult = {
     processingSpeed?: ProcessingSpeed;
     parallelViews?: boolean;
     viewRequestCount?: number;
+    // Views actually sent for this run. Older files did not record selection.
+    selectedViews?: string[];
     // Actual API image settings. Legacy files used 1024 pixels and JPEG 90%.
     imageSize?: number;
     jpegQuality?: number;

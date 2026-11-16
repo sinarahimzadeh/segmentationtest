@@ -847,6 +847,69 @@
   cursor: zoom-in;
 }
 
+.thumbnailCard {
+  min-width: 0;
+}
+
+.thumbnailSelected .thumbnail {
+  border-color: #22998c;
+}
+
+.thumbnailSkipped .thumbnailImage {
+  opacity: 0.5;
+}
+
+.viewSelection {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+  color: #bac8cc;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.viewSelection input {
+  margin: 0;
+  accent-color: #159c8d;
+}
+
+.viewSelectionControls {
+  display: grid;
+  gap: 7px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.viewSelectionControls > div {
+  display: flex;
+  gap: 7px;
+}
+
+.viewSelectionControls button {
+  padding: 4px 7px;
+  border: 1px solid #3b484d;
+  border-radius: 4px;
+  background: #111719;
+  color: #bce1dc;
+  font: inherit;
+  cursor: pointer;
+}
+
+.viewSelectionControls button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.runViewCount {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .thumbnail:hover,
 .thumbnail:focus-visible {
   border-color: #718187;

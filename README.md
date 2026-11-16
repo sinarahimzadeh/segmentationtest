@@ -50,6 +50,15 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Model runs and benchmark
 
+Each camera thumbnail has a **Send to AI** checkbox. All eight start selected
+when an STL loads. Uncheck any views to omit them from the next baseline,
+comparison or standalone segmentation, in parallel or grouped mode. At least
+one view is required. Clicking the image still opens its enlarged preview.
+The model-runs table shows the view count, and new saved files record the
+actual view names in `analysis.meta.selectedViews`. Changing the selection
+does not rerun the AI or alter the displayed result. Tooth numbering remains
+its separate one-image request.
+
 **Gemini 4 Hydrogen** is available under Google Gemini with **Low, Medium,
 High, and XHigh** thinking. It uses the existing `GOOGLE_API_KEY` through
 LangChain, the same segmentation prompt, and the selected image/outline and
@@ -63,8 +72,8 @@ all subsequent baseline, selected-model, and tooth-numbering requests.
 Dimensions: **1024×1024** (default), 896×896, 768×768, 640×640, 512×512,
 or 384×384. JPEG quality: **90%** (default), 80%, 70%, 60%, 50%, 40%, or 30%.
 Changing either dropdown updates the camera
-previews locally; it does not make an API call. All eight segmentation views,
-camera angles, lighting, model and thinking settings stay the same.
+previews locally; it does not make an API call. Camera angles, lighting,
+model and thinking settings stay the same. Only checked views are submitted.
 
 Every option is encoded directly from original render pixels, so repeated
 setting changes do not accumulate JPEG compression. The 3D triangle-ID maps

@@ -257,10 +257,10 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
         prompt_tokens_details: { cached_tokens: 10 }, cost: 0.0123 },
     }), { headers: { "Content-Type": "application/json" } });
   });
-  async function analyze(parallelViews, run = { type: "baseline", useOpenRouter: true }, imageSettings = {}) {
+  async function analyze(parallelViews, run = { type: "baseline", useOpenRouter: true }, imageSettings = {}, submittedViews = views) {
     const response = await POST(new Request("http://offline/api/analyze", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageSize: 1024, ...imageSettings, saveFiles: false, parallelViews, run, views }),
+      body: JSON.stringify({ imageSize: 1024, ...imageSettings, saveFiles: false, parallelViews, run, views: submittedViews }),
     }));
     const result = await response.json();
     assert.equal(response.status, 200, result.error);
@@ -349,6 +349,19 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
   assert.match(requests.at(-1).messages[0].content, /exactly 8/);
   assert.doesNotMatch(requests.at(-1).messages[0].content, /fewest points|do not pad/);
   assert.equal(fixedUi.meta.outlineMaxPointsPerScanbody, 8);
+  // The server must not add unchecked captures back into either request mode.
+  const chosen = [views[0], views[2], views[5]];
+  for (const parallelMode of [false, true]) {
+    const beforeSelection = requests.length;
+    const selected = await analyze(parallelMode, { type: "standalone", model: "openrouter-gpt-6.1-terra", reasoningEffort: "low" },
+      { outlineMinPoints: 3, outlineMaxPoints: 14 }, chosen);
+    assert.deepEqual(selected.meta.selectedViews, chosen.map((view) => view.name));
+    assert.deepEqual(selected.views.map((view) => view.view), chosen.map((view) => view.name));
+    assert.equal(selected.meta.viewRequestCount, parallelMode ? 3 : 1);
+    const submittedImages = requests.slice(beforeSelection).flatMap((request) => request.messages[1].content
+      .filter((part) => part.type === "image_url").map((part) => part.image_url.url));
+    assert.deepEqual(submittedImages, chosen.map((view) => view.image));
+  }
   const beforeInvalidBounds = requests.length;
   for (const bounds of [{ outlineMinPoints: 16, outlineMaxPoints: 8 }, { outlineMinPoints: 2, outlineMaxPoints: 40 },
     { outlineMinPoints: 3, outlineMaxPoints: 10001 }, { outlineMinPoints: 3.5, outlineMaxPoints: 40 }]) {

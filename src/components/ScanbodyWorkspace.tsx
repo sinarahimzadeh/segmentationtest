@@ -102,7 +102,8 @@ function formatStageTime(elapsedMs: number | null | undefined) {
   return elapsedMs < 1000 ? `${elapsedMs.toFixed(1)}ms` : `${(elapsedMs / 1000).toFixed(2)}s`;
 }
 
-function formatViewRequestTime(elapsedMs: number | undefined, sharedRequest: boolean) {
+function formatViewRequestTime(elapsedMs: number | undefined, sharedRequest: boolean, wasSent?: boolean) {
+  if (wasSent === false) return "AI: not sent";
   if (elapsedMs != null) return `AI: ${formatStageTime(elapsedMs)}`;
   return sharedRequest ? "AI: shared request" : "AI: —";
 }
@@ -170,6 +171,7 @@ export default function ScanbodyWorkspace() {
 
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [capturedViews, setCapturedViews] = useState<CapturedView[]>([]);
+  const [selectedViewNames, setSelectedViewNames] = useState<Set<string>>(() => new Set());
   const [sourceCanvases, setSourceCanvases] = useState<ReadonlyMap<string, HTMLCanvasElement>>(() => new Map());
   const [imageDimension, setImageDimension] = useState<ImageDimension>(1024);
   const [jpegQuality, setJpegQuality] = useState<JpegQuality>(90);
@@ -183,6 +185,7 @@ export default function ScanbodyWorkspace() {
     () => prepareImageViews(capturedViews, sourceCanvases, imageDimension, jpegQuality),
     [capturedViews, sourceCanvases, imageDimension, jpegQuality],
   );
+  const selectedViewCount = requestViews.filter((view) => selectedViewNames.has(view.name)).length;
   const [pcaElapsedMs, setPcaElapsedMs] = useState<number | null>(null);
   const [captureElapsedMs, setCaptureElapsedMs] = useState<number | null>(null);
   // Preserve the old combined field in saved JSON while recording both stages.
@@ -370,6 +373,7 @@ export default function ScanbodyWorkspace() {
       setToothRightSideHint("unknown");
       setToothViewChoice("auto");
       setCapturedViews([]);
+      setSelectedViewNames(new Set());
       setSelectedTriangleIds(new Set());
       setSelectedObjectCount(0);
       setBaselineRun(null);
@@ -460,6 +464,9 @@ export default function ScanbodyWorkspace() {
         triangleIdMapsRef.current = captures.triangleIdMaps;
         setSourceCanvases(captures.sourceCanvases);
         setCapturedViews(captures.views);
+        // A new STL starts with every camera selected. Changing image settings
+        // or viewing an old result does not change the next run's selection.
+        setSelectedViewNames(new Set(captures.views.map((view) => view.name)));
 
         // Load real JSON files from the project's benchmark-output folder.
         try {
@@ -531,6 +538,11 @@ export default function ScanbodyWorkspace() {
     runKind: SavedBenchmarkRun["kind"],
   ) => {
     if (capturedViews.length === 0) return;
+    const viewsForRun = requestViews.filter((view) => selectedViewNames.has(view.name));
+    if (viewsForRun.length === 0) {
+      setError("Select at least one camera view to send to the AI.");
+      return;
+    }
     if (runKind === "comparison" && !baselineRun) {
       setError("Run the Sol Medium baseline first.");
       return;
@@ -576,9 +588,9 @@ export default function ScanbodyWorkspace() {
                   reasoningEffort: comparisonEffort,
                   processingSpeed: comparisonSpeed,
                 },
-          // Send every captured camera angle. A scanbody that is unclear in one
-          // render can be much easier to recognize from another side.
-          views: requestViews.map((view) => ({
+          // Filter BEFORE the API call: unchecked images are never sent to the
+          // provider, in either parallel or grouped mode, for any model.
+          views: viewsForRun.map((view) => ({
             name: view.name,
             image: view.image,
           })),
@@ -713,6 +725,7 @@ export default function ScanbodyWorkspace() {
     baselineRun,
     capturedViews,
     requestViews,
+    selectedViewNames,
     imageDimension,
     jpegQuality,
     outlineMinPointsInput,
@@ -835,6 +848,7 @@ export default function ScanbodyWorkspace() {
     [analysis],
   );
   const sharedImageRequest = analysis?.meta.viewTimings === null;
+  const analyzedViewNames = new Set(analysis?.meta.selectedViews ?? []);
   const previewView = requestViews.find(
     (view) => view.name === previewViewName,
   );
@@ -1052,7 +1066,7 @@ export default function ScanbodyWorkspace() {
               className={styles.analyzeButton}
               type="button"
               onClick={() => void runAnalysis("baseline")}
-              disabled={capturedViews.length === 0 || Boolean(busyLabel)}
+              disabled={selectedViewCount === 0 || Boolean(busyLabel)}
             >
               {busyLabel === "Finding scanbodies" ? (
                 <LoaderCircle className={styles.spin} size={17} />
@@ -1260,7 +1274,7 @@ export default function ScanbodyWorkspace() {
               onClick={() => void runAnalysis(compareModelWithBaseline ? "comparison" : "standalone")}
               disabled={
                 (compareModelWithBaseline && !baselineRun) ||
-                capturedViews.length === 0 ||
+                selectedViewCount === 0 ||
                 Boolean(busyLabel)
               }
             >
@@ -1317,7 +1331,10 @@ export default function ScanbodyWorkspace() {
                   </div>
                   {visibleModelRuns.map((run) => (
                     <button key={run.id} type="button" onClick={() => showSavedRun(run)}>
-                      <span title={run.analysis.meta.modelLabel}>{run.analysis.meta.modelLabel}</span>
+                      <span title={`${run.analysis.meta.modelLabel}${run.analysis.meta.selectedViews ? `\nViews: ${run.analysis.meta.selectedViews.join(", ")}` : ""}`}>
+                        {run.analysis.meta.modelLabel}
+                        {run.analysis.meta.selectedViews ? <small className={styles.runViewCount}>{run.analysis.meta.selectedViews.length} views</small> : null}
+                      </span>
                       <strong>{run.metrics ? `${run.metrics.sameTrianglePercent.toFixed(1)}%` : "—"}</strong>
                       <strong>{run.metrics ? `${run.metrics.baselineFoundPercent.toFixed(1)}%` : "—"}</strong>
                       <strong>{run.metrics ? `${run.metrics.extraCandidatePercent.toFixed(1)}%` : "—"}</strong>
@@ -1393,7 +1410,7 @@ export default function ScanbodyWorkspace() {
                 </select>
               </label>
             </div>
-            <p className={styles.imageSettingsNote}>Applies to the next run. All 8 views are kept.</p>
+            <p className={styles.imageSettingsNote}>Applies to the next run. Choose which views to send in Camera views.</p>
             {analysis ? <p className={styles.imageSettingsNote}>Displayed result: {analysis.meta.imageSize ?? CAPTURE_SIZE} × {analysis.meta.imageSize ?? CAPTURE_SIZE} · JPEG {analysis.meta.jpegQuality ?? 90}%</p> : null}
           </section>
 
@@ -1581,8 +1598,20 @@ export default function ScanbodyWorkspace() {
               <span className={styles.eyebrow}>Review</span>
               <h2>Camera views</h2>
             </div>
-            <div className={styles.viewCount}>{capturedViews.length}/8</div>
+            <div className={styles.viewCount}>{selectedViewCount}/{capturedViews.length || 8} selected</div>
           </div>
+
+          {capturedViews.length > 0 ? (
+            <div className={styles.viewSelectionControls}>
+              <span>Check views to send. Click an image to enlarge.</span>
+              <div>
+                <button type="button" disabled={Boolean(busyLabel)} onClick={() => setSelectedViewNames(new Set(requestViews.map((view) => view.name)))}>Select all</button>
+                <button type="button" disabled={Boolean(busyLabel)} onClick={() => setSelectedViewNames(new Set())}>Clear selection</button>
+              </div>
+              {selectedViewCount === 0 ? <span>Select at least one view to run segmentation.</span> : null}
+              {analysis?.meta.selectedViews ? <span title={[...analyzedViewNames].join(", ")}>Displayed result used {analyzedViewNames.size} views.</span> : null}
+            </div>
+          ) : null}
 
           <div className={styles.thumbnailList}>
             {capturedViews.length === 0 ? (
@@ -1598,6 +1627,15 @@ export default function ScanbodyWorkspace() {
                   detections={detectionsByView.get(view.name) ?? []}
                   requestElapsedMs={requestTimesByView.get(view.name)}
                   sharedRequest={sharedImageRequest}
+                  wasSent={analysis?.meta.selectedViews ? analyzedViewNames.has(view.name) : undefined}
+                  selected={selectedViewNames.has(view.name)}
+                  selectionDisabled={Boolean(busyLabel)}
+                  onSelectionChange={(checked) => setSelectedViewNames((current) => {
+                    const next = new Set(current);
+                    if (checked) next.add(view.name);
+                    else next.delete(view.name);
+                    return next;
+                  })}
                   onOpen={() => setPreviewViewName(view.name)}
                 />
               ))
@@ -1665,7 +1703,7 @@ export default function ScanbodyWorkspace() {
                 <span className={styles.eyebrow}>Camera view</span>
                 <strong>{previewView.label}</strong>
                 <small className={styles.previewRequestTime}>
-                  {formatViewRequestTime(requestTimesByView.get(previewView.name), sharedImageRequest)}
+                  {formatViewRequestTime(requestTimesByView.get(previewView.name), sharedImageRequest, analysis?.meta.selectedViews ? analyzedViewNames.has(previewView.name) : undefined)}
                 </small>
               </div>
               <button
@@ -1706,65 +1744,84 @@ function ViewThumbnail({
   detections,
   requestElapsedMs,
   sharedRequest,
+  wasSent,
+  selected,
+  selectionDisabled,
+  onSelectionChange,
   onOpen,
 }: {
   view: CapturedView;
   detections: Detection[];
   requestElapsedMs?: number;
   sharedRequest: boolean;
+  wasSent?: boolean;
+  selected: boolean;
+  selectionDisabled: boolean;
+  onSelectionChange: (checked: boolean) => void;
   onOpen: () => void;
 }) {
   return (
-    <button
-      className={styles.thumbnail}
-      type="button"
-      onClick={onOpen}
-      title={`Open ${view.label} camera view`}
-    >
-      <div className={styles.thumbnailImage}>
-        {/* The image is generated locally from the uploaded STL. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={view.image} alt={`${view.label} STL render`} />
-        <svg
-          className={styles.outlineLayer}
-          viewBox={`0 0 ${CAPTURE_SIZE} ${CAPTURE_SIZE}`}
-          preserveAspectRatio="none"
-          aria-hidden="true"
-        >
-          {detections.map((detection, index) => (
-            <polygon
-              key={`${view.name}-${index}`}
-              className={styles.detectionOutline}
-              points={detection.outline.map(([x, y]) => `${x},${y}`).join(" ")}
-            />
-          ))}
-        </svg>
-        {detections.map((detection, index) => {
-          const [firstX, firstY] = detection.outline[0] ?? [0, 0];
-          return (
-            <span
-              key={`${view.name}-${index}-confidence`}
-              className={styles.confidenceLabel}
-              style={{
-                left: `${(firstX / CAPTURE_SIZE) * 100}%`,
-                top: `${(Math.max(firstY, 110) / CAPTURE_SIZE) * 100}%`,
-              }}
-            >
-              {Math.round(detection.confidence * 100)}
-            </span>
-          );
-        })}
-      </div>
-      <footer>
-        <span>{view.label}</span>
-        <span>{detections.length ? `${detections.length} ROI` : "Clear"}</span>
-        <small className={styles.viewRequestTime} title={sharedRequest
-          ? "All images were sent in one request; separate image times are unavailable."
-          : "Elapsed API request time for this image, including provider/network waiting and response parsing. Not pure model inference time."}>
-          {formatViewRequestTime(requestElapsedMs, sharedRequest)}
-        </small>
-      </footer>
-    </button>
+    <div className={`${styles.thumbnailCard} ${selected ? styles.thumbnailSelected : styles.thumbnailSkipped}`}>
+      {/* Separate controls: checking this box never opens the image preview. */}
+      <label className={styles.viewSelection}>
+        <input type="checkbox" checked={selected} disabled={selectionDisabled}
+          aria-label={`Send ${view.label} view to AI`}
+          onChange={(event) => onSelectionChange(event.currentTarget.checked)} />
+        <span>{selected ? "Send to AI" : "Skip this view"}</span>
+      </label>
+      <button
+        className={styles.thumbnail}
+        type="button"
+        onClick={onOpen}
+        title={`Open ${view.label} camera view`}
+      >
+        <div className={styles.thumbnailImage}>
+          {/* The image is generated locally from the uploaded STL. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={view.image} alt={`${view.label} STL render`} />
+          <svg
+            className={styles.outlineLayer}
+            viewBox={`0 0 ${CAPTURE_SIZE} ${CAPTURE_SIZE}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            {detections.map((detection, index) => (
+              <polygon
+                key={`${view.name}-${index}`}
+                className={styles.detectionOutline}
+                points={detection.outline.map(([x, y]) => `${x},${y}`).join(" ")}
+              />
+            ))}
+          </svg>
+          {detections.map((detection, index) => {
+            const [firstX, firstY] = detection.outline[0] ?? [0, 0];
+            return (
+              <span
+                key={`${view.name}-${index}-confidence`}
+                className={styles.confidenceLabel}
+                style={{
+                  left: `${(firstX / CAPTURE_SIZE) * 100}%`,
+                  top: `${(Math.max(firstY, 110) / CAPTURE_SIZE) * 100}%`,
+                }}
+              >
+                {Math.round(detection.confidence * 100)}
+              </span>
+            );
+          })}
+        </div>
+        <footer>
+          <span>{view.label}</span>
+          <span>{detections.length ? `${detections.length} ROI` : "Clear"}</span>
+          <small className={styles.viewRequestTime} title={wasSent === false
+            ? "This view was not sent in the displayed run."
+            : sharedRequest
+            ? "Selected images were sent in one request; separate image times are unavailable."
+            : "Elapsed API request time for this image, including provider/network waiting and response parsing. Not pure model inference time."}>
+            {formatViewRequestTime(requestElapsedMs, sharedRequest, wasSent)}
+          </small>
+        </footer>
+      </button>
+    </div>
   );
 }
 

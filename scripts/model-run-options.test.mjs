@@ -45,9 +45,11 @@ function loadRunAnalysis(context, callbackName = "runAnalysis") {
 function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90, outlineInputs = { min: "16", max: "40" }) {
   const state = { requests: [], saves: [], modelRuns: [], error: null };
   const clock = { elapsed: 0 };
+  const selection = new Set(Array.from({ length: 8 }, (_, index) => `view-${index}`));
   const context = {
     capturedViews: Array.from({ length: 8 }, (_, index) => ({ name: `view-${index}`, image: `data:image/jpeg;base64,${index}` })),
     requestViews: Array.from({ length: 8 }, (_, index) => ({ name: `view-${index}`, image: `data:image/jpeg;base64,selected-${imageDimension}-${jpegQuality}-${index}` })),
+    selectedViewNames: selection,
     imageDimension, jpegQuality,
     outlineMinPointsInput: outlineInputs.min, outlineMaxPointsInput: outlineInputs.max,
     baselineRun: existingBaseline,
@@ -71,6 +73,7 @@ function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90,
       clock.elapsed += 5000;
       const request = state.requests.at(-1);
       return new Response(JSON.stringify({ ...analysis, meta: { ...analysis.meta, imageSize: imageDimension, jpegQuality,
+        selectedViews: request.views.map((view) => view.name),
         outlineMinPointsPerScanbody: request.outlineMinPoints, outlineMaxPointsPerScanbody: request.outlineMaxPoints } }));
     },
     saveBenchmarkFile: async (run) => { state.saves.push(run); return `${run.kind}.json`; },
@@ -79,7 +82,7 @@ function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90,
   for (const name of ["BusyLabel", "Error", "AnalysisNotice", "Analysis", "ToothNumbers", "ToothRightSideHint", "SelectedTriangleIds", "SelectedObjectCount", "BaselineRun"]) {
     context[`set${name}`] = (value) => { state[name[0].toLowerCase() + name.slice(1)] = value; };
   }
-  return { state, run: loadRunAnalysis(context) };
+  return { state, run: loadRunAnalysis(context), selection };
 }
 
 test("all four save/compare combinations use the selected model's own save setting", async () => {
@@ -141,6 +144,35 @@ test("comparison off ignores an existing baseline; comparison on alone requires 
   await comparison.run("comparison");
   assert.equal(comparison.state.requests.length, 0);
   assert.match(comparison.state.error, /baseline first/);
+});
+
+test("only checked views are submitted and their names are preserved when saving each run kind", async () => {
+  for (const kind of ["baseline", "comparison", "standalone"]) {
+    for (const indices of [[0], [0, 2, 5], [1, 2, 3, 4, 6, 7]]) {
+      const { state, run, selection } = client(kind !== "baseline", kind === "comparison" ? baseline : null);
+      selection.clear();
+      for (const index of indices) selection.add(`view-${index}`);
+      await run(kind);
+      assert.equal(state.error, null);
+      assert.equal(state.requests.length, 1);
+      const names = indices.map((index) => `view-${index}`);
+      assert.deepEqual(state.requests[0].views.map((view) => view.name), names);
+      assert.deepEqual(state.saves[0].analysis.meta.selectedViews, names);
+      assert.deepEqual(state.analysis.meta.selectedViews, names);
+      assert(state.requests[0].views.every((view) => view.image.includes(`selected-1024-90-${view.name.slice(5)}`)));
+    }
+  }
+});
+
+test("an empty camera selection cannot start any paid segmentation request", async () => {
+  for (const kind of ["baseline", "comparison", "standalone"]) {
+    const { state, run, selection } = client(false, kind === "comparison" ? baseline : null);
+    selection.clear();
+    await run(kind);
+    assert.equal(state.requests.length, 0);
+    assert.equal(state.saves.length, 0);
+    assert.match(state.error, /Select at least one camera view/);
+  }
 });
 
 test("outline inputs apply to baseline, comparison and standalone runs; a blank minimum means three points", async () => {
@@ -228,7 +260,7 @@ test("standalone results save/load without a baseline and survive baseline repla
   const routes = loadFileRoutes(files);
   const run = { id: "test", storageVersion: 1, meshKey, meshName: "test.stl", kind: "standalone",
     model: "openrouter-gpt-6.1-terra", reasoningEffort: "low", createdAt: "2026-11-11T12:00:00.000Z",
-    analysis: { ...analysis, meta: { ...analysis.meta, imageSize: 768, jpegQuality: 70, pcaElapsedMs: 100.5, captureElapsedMs: 1134, preparationElapsedMs: 1234.5, mappingElapsedMs: 27.5 } },
+    analysis: { ...analysis, meta: { ...analysis.meta, selectedViews: ["top", "front", "left"], imageSize: 768, jpegQuality: 70, pcaElapsedMs: 100.5, captureElapsedMs: 1134, preparationElapsedMs: 1234.5, mappingElapsedMs: 27.5 } },
     selectedTriangleIds: [1, 2], objectCount: 1, detectedScanbodyCount: 1, metrics: null };
   const post = (value) => routes.POST(new Request("http://offline/api/benchmarks", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
@@ -239,6 +271,7 @@ test("standalone results save/load without a baseline and survive baseline repla
   assert.match((await response.json()).savedPath, /\/runs\//);
   const loadedRun = (await get())[0];
   assert.equal(loadedRun.kind, "standalone");
+  assert.deepEqual(loadedRun.analysis.meta.selectedViews, ["top", "front", "left"]);
   assert.equal(loadedRun.analysis.meta.imageSize, 768);
   assert.equal(loadedRun.analysis.meta.jpegQuality, 70);
   assert.equal(loadedRun.analysis.meta.pcaElapsedMs, 100.5);

@@ -54,7 +54,7 @@ export type AiModelOption = {
   cachedInputPricePerMillionTokens: number;
   outputPricePerMillionTokens: number;
   apiModelName?: string;
-  // Only OpenAI models selected through OpenRouter offer this speed selector.
+  // OpenAI speed tiers, available directly and through OpenRouter.
   speedPriceMultipliers?: Partial<Record<ProcessingSpeed, number>>;
 };
 
@@ -66,6 +66,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     label: "GPT-6.1 Sol",
     // Sol Medium is the fixed baseline; High can be compared with it.
     comparisonEfforts: ["low", "high"],
+    speedPriceMultipliers: { fast: 2, ultrafast: 6 },
     inputPricePerMillionTokens: 2,
     cachedInputPricePerMillionTokens: 0.2,
     outputPricePerMillionTokens: 10,
@@ -75,6 +76,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     provider: "openai",
     label: "GPT-6.1 Terra",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2 },
     inputPricePerMillionTokens: 1,
     cachedInputPricePerMillionTokens: 0.1,
     outputPricePerMillionTokens: 5,
@@ -84,6 +86,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     provider: "openai",
     label: "GPT-6 Sol",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2 },
     inputPricePerMillionTokens: 2,
     cachedInputPricePerMillionTokens: 0.2,
     outputPricePerMillionTokens: 10,
@@ -93,6 +96,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     provider: "openai",
     label: "GPT-6 Luna",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2 },
     inputPricePerMillionTokens: 0.1,
     cachedInputPricePerMillionTokens: 0.01,
     outputPricePerMillionTokens: 0.5,
@@ -102,6 +106,7 @@ export const AI_MODEL_OPTIONS: readonly AiModelOption[] = [
     provider: "openai",
     label: "GPT-5.5",
     comparisonEfforts: ["low", "medium", "high"],
+    speedPriceMultipliers: { fast: 2.5 },
     inputPricePerMillionTokens: 5,
     cachedInputPricePerMillionTokens: 0.5,
     outputPricePerMillionTokens: 30,

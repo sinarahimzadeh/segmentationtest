@@ -219,6 +219,93 @@ function loadRoute() {
   return route.exports.POST;
 }
 
+test("direct OpenAI sends the selected speed with unchanged images and saves the actual tier", async (t) => {
+  const oldKeys = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY };
+  process.env.OPENAI_API_KEY = "offline-openai-key";
+  process.env.OPENROUTER_API_KEY = "offline-openrouter-key";
+  t.after(() => {
+    for (const [key, value] of Object.entries(oldKeys)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const POST = loadRoute();
+  const requests = [];
+  let forceDowngrade = false;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    // A direct speed selection must never silently switch to OpenRouter.
+    assert.equal(String(url), "https://api.openai.com/v1/responses");
+    const body = JSON.parse(init.body);
+    requests.push(body);
+    assert.equal(body.reasoning.effort, "low");
+    assert.equal(body.text.format.type, "json_schema");
+    const parts = body.input.flatMap((message) => Array.isArray(message.content) ? message.content : []);
+    const ids = parts.filter((part) => part.type === "input_text" && part.text.startsWith("VIEW_ID: ")).map((part) => part.text.slice(9));
+    assert.equal(parts.filter((part) => part.type === "input_image").length, ids.length);
+    assert(parts.filter((part) => part.type === "input_image").every((part) => part.detail === "high"));
+    const boxMode = Boolean(body.text.format.schema.properties.views.items.properties.detections.items.properties.box);
+    const text = JSON.stringify({ views: ids.map((view) => ({ view, detections: [boxMode
+      ? { label: "scanbody", box: [10, 10, 20, 20], confidence: 0.9 }
+      : { label: "scanbody", outline: "10,10 20,10 20,20", confidence: 0.9 }] })) });
+    return new Response(JSON.stringify({
+      id: "resp_offline", object: "response", created_at: 1, status: "completed", model: body.model,
+      service_tier: forceDowngrade ? "default" : body.model === "gpt-5.5" && body.service_tier === "fast" ? "priority" : body.service_tier,
+      output: [{ id: "msg_offline", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] }],
+      usage: { input_tokens: ids.length * 100, input_tokens_details: { cached_tokens: ids.length * 10 },
+        output_tokens: ids.length * 20, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: ids.length * 120 },
+    }), { headers: { "Content-Type": "application/json" } });
+  });
+  const call = async (model, processingSpeed, parallelViews, boundingBoxesOnly = false) => {
+    const response = await POST(new Request("http://offline/api/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageSize: 1024, saveFiles: false, parallelViews, boundingBoxesOnly,
+        run: { type: "standalone", model, reasoningEffort: "low", processingSpeed }, views }),
+    }));
+    return { status: response.status, result: await response.json() };
+  };
+  for (const [model, speed] of [
+    ["gpt-6.1-sol", "fast"], ["gpt-6.1-sol", "ultrafast"], ["gpt-6.1-terra", "fast"],
+    ["gpt-6-sol", "fast"], ["gpt-6-luna", "fast"], ["gpt-5.5", "fast"],
+    ["gpt-6.1-terra", "standard"],
+  ]) {
+    for (const parallel of [false, true]) {
+      const before = requests.length;
+      const { status, result } = await call(model, speed, parallel);
+      assert.equal(status, 200, result.error);
+      assert.equal(result.meta.provider, "openai");
+      assert.equal(result.meta.processingSpeed, speed);
+      assert.equal(result.meta.serviceTier, speed === "standard" ? "default" : model === "gpt-5.5" ? "priority" : speed);
+      assert.equal(result.meta.viewRequestCount, parallel ? 8 : 1);
+      assert.equal(result.meta.inputTokens, 800);
+      assert.equal(result.meta.outputTokens, 160);
+      assert.deepEqual(result.meta.selectedViews, views.map((view) => view.name));
+      assert.deepEqual(result.views.map((view) => view.view), views.map((view) => view.name));
+      const sent = requests.slice(before);
+      assert.equal(sent.length, parallel ? 8 : 1);
+      assert(sent.every((body) => body.service_tier === (speed === "standard" ? "default" : speed)));
+      if (speed !== "standard") assert.match(result.meta.modelLabel, speed === "fast" ? / · Fast/ : / · Ultrafast/);
+    }
+  }
+  const boxes = await call("gpt-6.1-sol", "ultrafast", true, true);
+  assert.equal(boxes.status, 200, boxes.result.error);
+  assert.equal(boxes.result.meta.detectionMode, "box");
+  assert.deepEqual(boxes.result.views[0].detections[0].box, [10, 10, 20, 20]);
+  let before = requests.length;
+  assert.equal((await call("gpt-6-luna", "ultrafast", true)).status, 400);
+  assert.equal(requests.length, before, "unsupported tiers must fail before a paid call");
+  forceDowngrade = true;
+  const downgraded = await call("gpt-6.1-terra", "fast", true);
+  assert.equal(downgraded.status, 400);
+  assert.match(downgraded.result.error, /OpenAI did not confirm fast/);
+  assert.equal(requests.length - before, 8, "no retries or provider fallbacks on a downgraded tier");
+  before = requests.length;
+  delete process.env.OPENAI_API_KEY;
+  const missingKey = await call("gpt-6.1-terra", "fast", false);
+  assert.equal(missingKey.status, 400);
+  assert.match(missingKey.result.error, /OPENAI_API_KEY is missing/);
+  assert.equal(requests.length, before, "a direct Fast request cannot fall back to an OpenRouter key");
+});
+
 test("real route keeps prompt/settings, maps outlines, and totals eight independent receipts", async (t) => {
   const settings = {
     OPENROUTER_API_KEY: "offline-test-key",

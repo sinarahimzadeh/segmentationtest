@@ -13,6 +13,7 @@ import { MistralChatModel } from "@/lib/mistral-chat";
 import { ScanbodyChatXAI } from "@/lib/xai-chat";
 import { analyzeViewBatches, type ViewBatchResult } from "@/lib/parallel-view-analysis";
 import { createOpenRouterReceiptFetch, getOpenRouterSpeedRouting, type OpenRouterReceipt } from "@/lib/openrouter-speed";
+import { createOpenAiSpeedFetch, getOpenAiServiceTier, type OpenAiSpeedReceipt } from "@/lib/openai-speed";
 import {
   AI_MODEL_IDS,
   PROCESSING_SPEEDS,
@@ -294,8 +295,10 @@ export async function POST(request: Request) {
       ? createDetectionSchema(outlinePointRange)
       : boxDetectionSchema;
     const selection = resolveModelSelection(body.run);
-    // Honor the baseline provider toggle even if that provider's key fails.
-    const allowOpenRouterFallback = body.run.type !== "baseline" && Boolean(process.env.OPENROUTER_API_KEY);
+    // Honor the baseline provider toggle and direct paid speed selections.
+    // Standard comparisons retain their existing OpenRouter fallback.
+    const allowOpenRouterFallback = body.run.type !== "baseline" &&
+      selection.processingSpeed === "standard" && Boolean(process.env.OPENROUTER_API_KEY);
     const directClaude = body.directClaude && selection.provider === "anthropic";
     const isOpenRouterOpenAi = selection.provider === "openrouter" &&
       getAiModelOption(selection.model).apiModelName?.startsWith("openai/");
@@ -304,7 +307,7 @@ export async function POST(request: Request) {
       throw new Error(
         body.run.type === "baseline"
           ? "OPENAI_API_KEY is missing. Add it to .env.local or enable OpenRouter for the baseline."
-          : "OPENAI_API_KEY or OPENROUTER_API_KEY is missing. Add it to .env.local and restart the server.",
+          : "OPENAI_API_KEY is missing. Add it to .env.local and restart the server.",
       );
     }
     if (selection.provider === "google" && !process.env.GOOGLE_API_KEY) {
@@ -341,6 +344,7 @@ export async function POST(request: Request) {
     async function analyzeBatch(batchViews: typeof body.views): Promise<ViewBatchResult<RawDetection>> {
       // Every concurrent request needs its own client and mutable billing receipt.
       const openRouterReceipt: OpenRouterReceipt = { serviceTier: null, reportedCostUsd: null };
+      const openAiReceipt: OpenAiSpeedReceipt = { serviceTier: null };
       const detector = directClaude || selection.provider === "xai"
         ? null
         : selection.provider === "openai"
@@ -361,8 +365,12 @@ export async function POST(request: Request) {
               : new ChatOpenAI({
                   model: selection.model,
                   apiKey: process.env.OPENAI_API_KEY,
-                  maxRetries: 1,
+                  maxRetries: selection.processingSpeed === "standard" ? 1 : 0,
                   useResponsesApi: true,
+                  configuration: {
+                    fetch: createOpenAiSpeedFetch(openAiReceipt, selection.processingSpeed),
+                  },
+                  modelKwargs: { service_tier: getOpenAiServiceTier(selection.processingSpeed) },
                   reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
                 })
             ).withStructuredOutput<RawAnalysis>(detectionSchema, {
@@ -562,6 +570,7 @@ export async function POST(request: Request) {
         cachedInputTokens,
         outputTokens,
         ...openRouterReceipt,
+        serviceTier: openRouterReceipt.serviceTier ?? openAiReceipt.serviceTier,
         estimatedCostUsd: openRouterReceipt.reportedCostUsd ?? estimatePaidCostUsd({
           modelId: selection.model,
           inputTokens,
@@ -641,8 +650,10 @@ export async function POST(request: Request) {
           ? { integration: directClaude ? "anthropic-sdk" : "langchain" }
           : {}),
         reasoningEffort: selection.reasoningEffort,
-        ...(isOpenRouterOpenAi ? { processingSpeed: selection.processingSpeed } : {}),
-        ...(selection.provider === "openrouter" ? { serviceTier, reportedCostUsd } : {}),
+        ...(selection.provider === "openai" || isOpenRouterOpenAi
+          ? { processingSpeed: selection.processingSpeed } : {}),
+        ...(selection.provider === "openai" || selection.provider === "openrouter" ? { serviceTier } : {}),
+        ...(selection.provider === "openrouter" ? { reportedCostUsd } : {}),
         parallelViews: body.parallelViews,
         viewRequestCount,
         viewTimings,

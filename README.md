@@ -168,15 +168,18 @@ clears comparison files made against the old baseline and preserves standalone
 files in `runs/`. With a save switch off, neither its result file nor its raw
 LLM-response JSON is written.
 
-For OpenAI models selected through OpenRouter, **Speed** is separate from the
+For OpenAI models, both direct and through OpenRouter, **Speed** is separate from the
 thinking level. Fast is available for all five listed OpenAI models. Ultrafast
 is currently available for GPT-6.1 Sol. Unsupported speed options are disabled.
 Fast token prices are 2x Standard (2.5x for GPT-5.5); Sol Ultrafast is 6x.
 
-Fast/Ultrafast requests pin `openai/fast` or `openai/ultrafast`, disable provider
-fallbacks, and verify the returned `service_tier`. An unconfirmed or unavailable
+OpenRouter Fast/Ultrafast requests pin `openai/fast` or `openai/ultrafast`.
+Direct OpenAI requests use the Responses API's `service_tier: "fast"` or
+`"ultrafast"`. Both paths disable provider fallbacks and verify the returned
+`service_tier` (older OpenAI models can report `priority` for Fast). An unconfirmed or unavailable
 tier produces an error. The saved run label and filename include the speed;
-JSON also records `processingSpeed`, `serviceTier`, and `reportedCostUsd`.
+JSON also records `processingSpeed` and `serviceTier`. OpenRouter runs also
+record `reportedCostUsd` when the provider supplies a charge.
 The app uses OpenRouter's reported cost when provided, with a tier-specific
 estimate as a fallback. Existing saved runs continue to load.
 

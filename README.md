@@ -50,6 +50,20 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Model runs and benchmark
 
+**Bounding boxes only**, above the outline point inputs, defaults to off.
+Off keeps the existing outline segmentation. On requests only four numbers
+per detection, `box: [left, top, right, bottom]`, using the same selected views,
+model, thinking level, image settings and request mode. The camera previews draw
+rectangles; no 3D mapping, local refinement, triangle comparison or STL crop is
+performed. Outline point inputs are ignored in this mode. Cost, model time,
+selected views and `analysis.meta.detectionMode: "box"` are still recorded.
+
+Box trials use the existing save switches and are saved as standalone results
+under `benchmark-output/<STL SHA-256>/boxes/`. Even the Sol button's box trial
+cannot overwrite a segmentation baseline or delete comparisons. Raw box JSON
+uses `debug-output/latest-llm-box-response.json`; the browser's normal `outline`
+arrays in box results are only four rectangle corners for drawing the preview.
+
 Each camera thumbnail has a **Send to AI** checkbox. All eight start selected
 when an STL loads. Uncheck any views to omit them from the next baseline,
 comparison or standalone segmentation, in parallel or grouped mode. At least

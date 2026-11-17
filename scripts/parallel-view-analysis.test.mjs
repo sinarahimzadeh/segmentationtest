@@ -36,17 +36,20 @@ test("Hydrogen sends images at every documented thinking level and includes thin
     const usage = { promptTokenCount: ids.length * 100, cachedContentTokenCount: ids.length * 10,
       candidatesTokenCount: ids.length * 20, thoughtsTokenCount: ids.length * 30, totalTokenCount: ids.length * 150 };
     requests.push({ body, usage });
+    const boxMode = Boolean(body.generationConfig.responseSchema.properties.views.items.properties.detections.items.properties.box);
     return new Response(JSON.stringify({
       candidates: [{ index: 0, finishReason: "STOP", content: { role: "model", parts: [{ text: JSON.stringify({
-        views: ids.map((view) => ({ view, detections: [{ label: "scanbody", outline: "10,10 20,10 20,20", confidence: 0.9 }] })),
+        views: ids.map((view) => ({ view, detections: [boxMode
+          ? { label: "scanbody", box: [10, 10, 20, 20], confidence: 0.9 }
+          : { label: "scanbody", outline: "10,10 20,10 20,20", confidence: 0.9 }] })),
       }) }] } }], usageMetadata: usage,
     }), { headers: { "Content-Type": "application/json" } });
   });
-  const call = async (model, effort, parallelViews) => {
+  const call = async (model, effort, parallelViews, boundingBoxesOnly = false) => {
     const response = await POST(new Request("http://offline/api/analyze", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageSize: 768, jpegQuality: 80, outlineMinPoints: 3, outlineMaxPoints: 14,
-        saveFiles: false, parallelViews,
+        saveFiles: false, parallelViews, boundingBoxesOnly,
         run: { type: "standalone", model, reasoningEffort: effort }, views }),
     }));
     return { status: response.status, result: await response.json() };
@@ -96,6 +99,12 @@ test("Hydrogen sends images at every documented thinking level and includes thin
     assert.equal(result.meta.outputTokens, 160);
     assert.equal(requests.at(-1).body.generationConfig.thinkingConfig.thinkingLevel, "MEDIUM");
   }
+  const boxResult = await call("gemini-4-hydrogen", "xhigh", true, true);
+  assert.equal(boxResult.status, 200, boxResult.result.error);
+  assert.equal(boxResult.result.meta.detectionMode, "box");
+  assert.equal(boxResult.result.meta.outputTokens, 400);
+  assert.deepEqual(boxResult.result.views[0].detections[0].box, [10, 10, 20, 20]);
+  assert(!requests.at(-1).body.generationConfig.responseSchema.properties.views.items.properties.detections.items.properties.outline);
   const beforeInvalid = requests.length;
   for (const [model, effort] of [["gemini-4-hydrogen", "minimal"], ["gemini-4-argon", "xhigh"], ["gpt-6.1-terra", "xhigh"]]) {
     assert.equal((await call(model, effort, true)).status, 400);
@@ -383,4 +392,79 @@ test("real route keeps prompt/settings, maps outlines, and totals eight independ
   assert.equal(invalid.status, 400);
   assert.match((await invalid.json()).error, /SCANBODY_OUTLINE_MIN_POINTS/);
   assert.equal(requests.length, callsBefore);
+});
+
+test("box-only requests return four-number boxes; switching off retains the original contour contract", async (t) => {
+  const settings = { OPENROUTER_API_KEY: "offline-key", SCANBODY_OUTLINE_POINTS: "40", SCANBODY_OUTLINE_MIN_POINTS: "41" };
+  const previous = Object.fromEntries(Object.keys(settings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, settings);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  const POST = loadRoute();
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.equal(String(url), "https://openrouter.ai/api/v1/chat/completions");
+    const body = JSON.parse(init.body);
+    requests.push(body);
+    const schema = body.response_format.json_schema.schema.properties.views.items.properties.detections.items.properties;
+    const boxMode = Boolean(schema.box);
+    if (boxMode) {
+      assert.equal(schema.outline, undefined);
+      assert.equal(schema.box.type, "array");
+      assert.equal(schema.box.items.type, "number");
+      assert.equal(schema.box.minItems, 4); assert.equal(schema.box.maxItems, 4);
+      assert.match(body.messages[0].content, /simple bounding boxes/);
+      assert.doesNotMatch(body.messages[0].content, /trace its visible outer boundary using/);
+      assert.match(body.messages[1].content[0].text, /exactly four whole-pixel numbers/);
+    } else {
+      assert(schema.outline); assert.equal(schema.box, undefined);
+      assert.match(body.messages[0].content, /between 16 and 40/);
+      assert.match(body.messages[1].content[0].text, /ordered whole-number pixel pairs/);
+    }
+    const ids = body.messages[1].content.filter((part) => part.text?.startsWith("VIEW_ID: ")).map((part) => part.text.slice(9));
+    return new Response(JSON.stringify({ id: "offline-box", model: body.model, object: "chat.completion", created: 1,
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({
+        views: ids.map((view) => ({ view, detections: boxMode
+          ? [{ label: "scanbody", box: [70, 80, 30, 40], confidence: 0.9 },
+              { label: "scanbody", box: [10, 10, 10, 20], confidence: 0.9 }]
+          : [{ label: "scanbody", outline: "10,10 20,10 20,20", confidence: 0.9 }] })),
+      }) } }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, cost: 0.001 },
+    }), { headers: { "Content-Type": "application/json" } });
+  });
+  const chosen = [views[0], views[3]];
+  const call = (parallelViews, boxFlag) => POST(new Request("http://offline/api/analyze", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageSize: 1024, saveFiles: false, parallelViews,
+      ...(boxFlag === undefined ? {} : { boundingBoxesOnly: boxFlag }),
+      run: { type: "standalone", model: "openrouter-gpt-6.1-terra", reasoningEffort: "low" }, views: chosen }),
+  }));
+  for (const parallel of [false, true]) {
+    const before = requests.length;
+    const response = await call(parallel, true);
+    const result = await response.json();
+    assert.equal(response.status, 200, result.error);
+    assert.equal(requests.length - before, parallel ? 2 : 1);
+    assert.equal(result.meta.detectionMode, "box");
+    assert.match(result.meta.modelLabel, /Boxes/);
+    assert.deepEqual(result.meta.selectedViews, chosen.map((view) => view.name));
+    assert.equal(result.meta.outlineMaxPointsPerScanbody, undefined, "box mode ignores invalid outline defaults");
+    for (const view of result.views) {
+      assert.equal(view.detections.length, 1, "degenerate rectangles are skipped");
+      assert.deepEqual(view.detections[0].box, [30, 40, 70, 80]);
+      assert.deepEqual(view.detections[0].outline, [[30, 40], [70, 40], [70, 80], [30, 80]]);
+    }
+  }
+  process.env.SCANBODY_OUTLINE_MIN_POINTS = "16";
+  for (const flag of [false, undefined]) {
+    const response = await call(false, flag);
+    const result = await response.json();
+    assert.equal(response.status, 200, result.error);
+    assert.equal(result.meta.detectionMode, "outline");
+    assert.equal(result.meta.outlineMinPointsPerScanbody, 16);
+    assert.equal(result.views[0].detections[0].box, undefined);
+    assert.deepEqual(result.views[0].detections[0].outline, [[10, 10], [20, 10], [20, 20]]);
+  }
 });

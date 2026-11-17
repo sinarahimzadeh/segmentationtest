@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { analyzeClaudeDirect } from "@/lib/direct-claude";
+import { boxDetectionSchema, BOX_SYSTEM_PROMPT, normalizeBoundingBox, boxPreviewCorners } from "@/lib/box-detection";
+import type { Detection } from "@/lib/scanbody-types";
 import { MistralChatModel } from "@/lib/mistral-chat";
 import { ScanbodyChatXAI } from "@/lib/xai-chat";
 import { analyzeViewBatches, type ViewBatchResult } from "@/lib/parallel-view-analysis";
@@ -83,6 +85,7 @@ type MistralEffort = Extract<ReasoningEffort, "none" | "low" | "medium" | "high"
 const requestSchema = z.object({
   imageSize: z.number().int().min(256).max(2048),
   jpegQuality: z.number().int().min(1).max(100).default(90),
+  boundingBoxesOnly: z.boolean().default(false),
   // Optional for old clients. The UI sends both bounds for each new run.
   outlineMinPoints: z.number().int().min(3).max(10_000).optional(),
   outlineMaxPoints: z.number().int().min(3).max(10_000).optional(),
@@ -283,8 +286,13 @@ present. Never invent a detection when no manufactured post is visible.`;
 export async function POST(request: Request) {
   try {
     const body = requestSchema.parse(await request.json());
-    const outlinePointRange = getOutlinePointRange(body);
-    const detectionSchema = createDetectionSchema(outlinePointRange);
+    // Off preserves the existing contour prompt/schema. Box mode does not use
+    // outline bounds, and sends its own four-number schema to every provider.
+    const outlinePointRange = body.boundingBoxesOnly ? null : getOutlinePointRange(body);
+    type RawAnalysis = z.infer<ReturnType<typeof createDetectionSchema>> | z.infer<typeof boxDetectionSchema>;
+    const detectionSchema: z.ZodType<RawAnalysis> = outlinePointRange
+      ? createDetectionSchema(outlinePointRange)
+      : boxDetectionSchema;
     const selection = resolveModelSelection(body.run);
     // Honor the baseline provider toggle even if that provider's key fails.
     const allowOpenRouterFallback = body.run.type !== "baseline" && Boolean(process.env.OPENROUTER_API_KEY);
@@ -325,8 +333,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const imageInstruction = `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing ${outlinePointInstruction(outlinePointRange)} ordered whole-number pixel pairs in "x,y x,y" format.${outlinePointRange.min < outlinePointRange.max ? " Choose the fewest points needed to follow each scanbody's actual boundary closely." : ""}`;
-    const systemPrompt = createSystemPrompt(outlinePointRange);
+    const imageInstruction = outlinePointRange
+      ? `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each outline as one compact string containing ${outlinePointInstruction(outlinePointRange)} ordered whole-number pixel pairs in "x,y x,y" format.${outlinePointRange.min < outlinePointRange.max ? " Choose the fewest points needed to follow each scanbody's actual boundary closely." : ""}`
+      : `Every image is ${body.imageSize} by ${body.imageSize} pixels. Return each scanbody's bounding box as [left, top, right, bottom]: exactly four whole-pixel numbers measured from the top-left corner. Return boxes only, not outlines or segmentation masks.`;
+    const systemPrompt = outlinePointRange ? createSystemPrompt(outlinePointRange) : BOX_SYSTEM_PROMPT;
     type RawDetection = z.infer<typeof detectionSchema>["views"][number]["detections"][number];
     async function analyzeBatch(batchViews: typeof body.views): Promise<ViewBatchResult<RawDetection>> {
       // Every concurrent request needs its own client and mutable billing receipt.
@@ -355,7 +365,7 @@ export async function POST(request: Request) {
                   useResponsesApi: true,
                   reasoning: { effort: selection.reasoningEffort as "low" | "medium" | "high" },
                 })
-            ).withStructuredOutput(detectionSchema, {
+            ).withStructuredOutput<RawAnalysis>(detectionSchema, {
               name: "scanbody_roi_detection",
               strict: Boolean(process.env.OPENAI_API_KEY),
               includeRaw: true,
@@ -372,7 +382,7 @@ export async function POST(request: Request) {
                   // above prevents unsupported levels on other Gemini models.
                   thinkingLevel: selection.reasoningEffort.toUpperCase() as GeminiThinkingLevel,
                 },
-              }).withStructuredOutput(detectionSchema, {
+              }).withStructuredOutput<RawAnalysis>(detectionSchema, {
                 name: "scanbody_roi_detection",
                 includeRaw: true,
               })
@@ -386,7 +396,7 @@ export async function POST(request: Request) {
                     selection.reasoningEffort === "default"
                       ? undefined
                       : (selection.reasoningEffort as MistralEffort),
-                }).withStructuredOutput(detectionSchema, {
+                }).withStructuredOutput<RawAnalysis>(detectionSchema, {
                   name: "scanbody_roi_detection",
                   includeRaw: true,
                 })
@@ -408,7 +418,7 @@ export async function POST(request: Request) {
                         ? { reasoning: { effort: selection.reasoningEffort } }
                         : {}),
                     },
-                  }).withStructuredOutput(detectionSchema, {
+                  }).withStructuredOutput<RawAnalysis>(detectionSchema, {
                     name: "scanbody_roi_detection",
                     includeRaw: true,
                   })
@@ -431,7 +441,7 @@ export async function POST(request: Request) {
                 outputConfig: {
                   effort: selection.reasoningEffort as ClaudeEffort,
                 },
-              }).withStructuredOutput(detectionSchema, {
+              }).withStructuredOutput<RawAnalysis>(detectionSchema, {
                 name: "scanbody_roi_detection",
                 // Anthropic's native JSON-schema output avoids extra tool-call
                 // wrapper tokens and returns the same parsed shape as other providers.
@@ -522,7 +532,7 @@ export async function POST(request: Request) {
                     ? { reasoning: { effort: selection.reasoningEffort } }
                     : {}),
                 },
-              }).withStructuredOutput(detectionSchema, {
+              }).withStructuredOutput<RawAnalysis>(detectionSchema, {
                 name: "scanbody_roi_detection",
                 includeRaw: true,
               });
@@ -579,7 +589,7 @@ export async function POST(request: Request) {
       const debugOutputDirectory = join(process.cwd(), "debug-output");
       await mkdir(debugOutputDirectory, { recursive: true });
       await writeFile(
-        join(debugOutputDirectory, "latest-llm-response.json"),
+        join(debugOutputDirectory, body.boundingBoxesOnly ? "latest-llm-box-response.json" : "latest-llm-response.json"),
         JSON.stringify(parsed, null, 2),
         "utf8",
       );
@@ -593,7 +603,18 @@ export async function POST(request: Request) {
       .filter((view) => validViewNames.has(view.view))
       .map((view) => ({
         view: view.view,
-        detections: view.detections.flatMap((detection) => {
+        detections: view.detections.flatMap((detection): Detection[] => {
+          if ("box" in detection) {
+            const box = normalizeBoundingBox(detection.box, body.imageSize);
+            if (!box) return [];
+            return [{
+              label: detection.label,
+              box,
+              // Preview only. The client skips 3D mapping for the box result.
+              outline: boxPreviewCorners(box),
+              confidence: Math.max(0, Math.min(1, detection.confidence)),
+            }];
+          }
           const outline = parseCompactOutline(detection.outline);
           // Three points are the minimum needed to form a polygon. Ignore only
           // a malformed detection instead of failing and losing the whole run.
@@ -613,7 +634,8 @@ export async function POST(request: Request) {
       views,
       meta: {
         model: selection.model,
-        modelLabel: `${getModelRunLabel(selection.model, selection.reasoningEffort, selection.processingSpeed)}${directClaude ? " · Direct API" : ""}${body.parallelViews ? " · Parallel" : ""}`,
+        modelLabel: `${getModelRunLabel(selection.model, selection.reasoningEffort, selection.processingSpeed)}${directClaude ? " · Direct API" : ""}${body.boundingBoxesOnly ? " · Boxes" : ""}${body.parallelViews ? " · Parallel" : ""}`,
+        detectionMode: body.boundingBoxesOnly ? "box" : "outline",
         provider: selection.provider,
         ...(selection.provider === "anthropic"
           ? { integration: directClaude ? "anthropic-sdk" : "langchain" }
@@ -632,9 +654,11 @@ export async function POST(request: Request) {
         imageSize: body.imageSize,
         jpegQuality: body.jpegQuality,
         // Keep the old field as the configured ceiling for existing consumers.
-        outlinePointsPerScanbody: outlinePointRange.max,
-        outlineMinPointsPerScanbody: outlinePointRange.min,
-        outlineMaxPointsPerScanbody: outlinePointRange.max,
+        ...(outlinePointRange ? {
+          outlinePointsPerScanbody: outlinePointRange.max,
+          outlineMinPointsPerScanbody: outlinePointRange.min,
+          outlineMaxPointsPerScanbody: outlinePointRange.max,
+        } : {}),
         elapsedMs,
         inputTokens,
         cachedInputTokens,

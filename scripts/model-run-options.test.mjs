@@ -42,7 +42,7 @@ function loadRunAnalysis(context, callbackName = "runAnalysis") {
   return loadedModule.exports;
 }
 
-function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90, outlineInputs = { min: "16", max: "40" }) {
+function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90, outlineInputs = { min: "16", max: "40" }, boxesOnly = false) {
   const state = { requests: [], saves: [], modelRuns: [], error: null };
   const clock = { elapsed: 0 };
   const selection = new Set(Array.from({ length: 8 }, (_, index) => `view-${index}`));
@@ -50,6 +50,7 @@ function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90,
     capturedViews: Array.from({ length: 8 }, (_, index) => ({ name: `view-${index}`, image: `data:image/jpeg;base64,${index}` })),
     requestViews: Array.from({ length: 8 }, (_, index) => ({ name: `view-${index}`, image: `data:image/jpeg;base64,selected-${imageDimension}-${jpegQuality}-${index}` })),
     selectedViewNames: selection,
+    boundingBoxesOnly: boxesOnly,
     imageDimension, jpegQuality,
     outlineMinPointsInput: outlineInputs.min, outlineMaxPointsInput: outlineInputs.max,
     baselineRun: existingBaseline,
@@ -64,6 +65,7 @@ function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90,
     getAiModelOption, getBaselineSelection, BENCHMARK_STORAGE_VERSION, compareTriangleSelections,
     CAPTURE_SIZE: 1024,
     mapAnalysisToTriangles: () => {
+      assert.equal(boxesOnly, false, "box-only mode must never perform local 3D mapping");
       clock.elapsed += 27.5;
       return { triangleIds: new Set([1, 2]), groupCount: 1 };
     },
@@ -73,6 +75,7 @@ function client(save, existingBaseline, imageDimension = 1024, jpegQuality = 90,
       clock.elapsed += 5000;
       const request = state.requests.at(-1);
       return new Response(JSON.stringify({ ...analysis, meta: { ...analysis.meta, imageSize: imageDimension, jpegQuality,
+        detectionMode: request.boundingBoxesOnly ? "box" : "outline",
         selectedViews: request.views.map((view) => view.name),
         outlineMinPointsPerScanbody: request.outlineMinPoints, outlineMaxPointsPerScanbody: request.outlineMaxPoints } }));
     },
@@ -202,6 +205,37 @@ test("invalid outline bounds cannot start a paid request", async () => {
   }
 });
 
+test("box-only mode skips mapping/comparison and cannot replace a baseline through either run button", async () => {
+  for (const kind of ["baseline", "comparison", "standalone"]) {
+    for (const save of [false, true]) {
+      // Each entry point retains its own save switch. Outline fields are
+      // deliberately invalid because they must be ignored in box mode.
+      const { state, run, selection } = client(kind === "baseline" ? !save : save,
+        kind === "baseline" ? baseline : null, 768, 70, { min: "bad", max: "" }, true);
+      selection.clear(); selection.add("view-0"); selection.add("view-2");
+      await run(kind);
+      assert.equal(state.error, null);
+      assert.equal(state.requests.length, 1);
+      const request = state.requests[0];
+      assert.equal(request.boundingBoxesOnly, true);
+      assert.equal(request.outlineMinPoints, undefined);
+      assert.equal(request.outlineMaxPoints, undefined);
+      assert.deepEqual(request.views.map((view) => view.name), ["view-0", "view-2"]);
+      assert.equal(state.analysis.meta.mappingElapsedMs, null);
+      assert.equal(state.analysis.meta.elapsedMs, 100, "LLM time must remain visible");
+      assert.deepEqual([...state.selectedTriangleIds], []);
+      assert.equal(state.selectedObjectCount, 0);
+      assert.equal(state.baselineRun, undefined, "the baseline setter must not run for a box trial");
+      assert.equal(state.modelRuns.length, 1);
+      assert.equal(state.modelRuns[0].kind, "standalone");
+      assert.equal(state.modelRuns[0].metrics, null);
+      assert.equal(state.modelRuns[0].detectedScanbodyCount, undefined);
+      assert.equal(state.modelRuns[0].analysis.meta.detectionMode, "box");
+      assert.equal(state.saves.length, save ? 1 : 0);
+    }
+  }
+});
+
 test("tooth numbering rescales an existing result to the newly selected image dimensions", async () => {
   const requests = [];
   const errors = [];
@@ -297,4 +331,41 @@ test("standalone results save/load without a baseline and survive baseline repla
   assert.equal(hydrogenSaved.model, "gemini-4-hydrogen");
   assert.equal(hydrogenSaved.reasoningEffort, "xhigh");
   assert.equal(hydrogenSaved.analysis.meta.reasoningEffort, "xhigh");
+});
+
+test("box files round-trip separately and cannot overwrite a baseline or delete comparisons", async () => {
+  const files = new Map();
+  const routes = loadFileRoutes(files);
+  const normal = { id: "normal", storageVersion: 1, meshKey, meshName: "test.stl", kind: "baseline",
+    model: "openrouter-gpt-6.1-terra", reasoningEffort: "low", createdAt: "2026-11-17T12:00:00.000Z",
+    analysis, selectedTriangleIds: [1, 2], objectCount: 1, metrics: null };
+  const post = (run) => routes.POST(new Request("http://offline/api/benchmarks", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(run),
+  }));
+  assert.equal((await post(normal)).status, 200);
+  const comparison = { ...normal, id: "comparison", kind: "comparison", metrics: compareTriangleSelections([1, 2], new Set([1]), 1, 1) };
+  assert.equal((await post(comparison)).status, 200);
+  const originalFiles = new Map(files);
+  const box = { ...normal, id: "boxes", kind: "standalone", selectedTriangleIds: [], objectCount: 0,
+    analysis: { ...analysis,
+      views: [{ view: "top", detections: [{ label: "scanbody", box: [10, 20, 30, 40],
+        outline: [[10, 20], [30, 20], [30, 40], [10, 40]], confidence: 0.9 }] }],
+      meta: { ...analysis.meta, detectionMode: "box", mappingElapsedMs: null } } };
+  const response = await post(box);
+  assert.equal(response.status, 200);
+  const { savedPath } = await response.json();
+  assert.match(savedPath, /[\\/]boxes[\\/]/);
+  for (const [path, bytes] of originalFiles) assert.equal(files.get(path), bytes);
+  const get = async () => (await (await routes.GET(new Request(`http://offline/api/benchmarks?meshKey=${meshKey}`))).json()).runs;
+  const restored = (await get()).find((run) => run.id === "boxes");
+  assert.equal(restored.analysis.meta.detectionMode, "box");
+  assert.deepEqual(restored.analysis.views[0].detections[0].box, [10, 20, 30, 40]);
+  assert.equal(restored.analysis.meta.mappingElapsedMs, null);
+  assert.equal((await post({ ...box, kind: "baseline" })).status, 400);
+  assert.equal((await post({ ...box, kind: "comparison", metrics: comparison.metrics })).status, 400);
+  assert.equal((await post({ ...box, selectedTriangleIds: [1] })).status, 400);
+  assert.equal(files.size, originalFiles.size + 1);
+  const boxBytes = files.get(savedPath);
+  assert.equal((await post(normal)).status, 200);
+  assert.equal(files.get(savedPath), boxBytes, "replacing a normal baseline must preserve box trials");
 });

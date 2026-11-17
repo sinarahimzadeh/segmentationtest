@@ -179,6 +179,7 @@ export default function ScanbodyWorkspace() {
   // A blank minimum removes the extra floor; a polygon still needs 3 points.
   const [outlineMinPointsInput, setOutlineMinPointsInput] = useState("16");
   const [outlineMaxPointsInput, setOutlineMaxPointsInput] = useState("40");
+  const [boundingBoxesOnly, setBoundingBoxesOnly] = useState(false);
   // Only the outgoing images change. PCA, cameras and 1024-pixel ID maps stay
   // fixed, so comparisons always refer to the same original STL triangles.
   const requestViews = useMemo(
@@ -506,6 +507,7 @@ export default function ScanbodyWorkspace() {
   );
 
   const mapAnalysisToTriangles = useCallback((result: AnalysisResult) => {
+    if (result.meta.detectionMode === "box") return { triangleIds: new Set<number>(), groupCount: 0 };
     const mesh = meshRef.current;
     if (!mesh) return { triangleIds: new Set<number>(), groupCount: 0 };
     const positions = mesh.geometry.getAttribute(
@@ -543,15 +545,15 @@ export default function ScanbodyWorkspace() {
       setError("Select at least one camera view to send to the AI.");
       return;
     }
-    if (runKind === "comparison" && !baselineRun) {
+    if (runKind === "comparison" && !baselineRun && !boundingBoxesOnly) {
       setError("Run the Sol Medium baseline first.");
       return;
     }
     const outlineMinPoints = outlineMinPointsInput.trim() === "" ? 3 : Number(outlineMinPointsInput);
     const outlineMaxPoints = Number(outlineMaxPointsInput);
     // Reject invalid settings before making any potentially paid request.
-    if (!Number.isInteger(outlineMinPoints) || !Number.isInteger(outlineMaxPoints) ||
-        outlineMinPoints < 3 || outlineMaxPoints > 10_000 || outlineMinPoints > outlineMaxPoints) {
+    if (!boundingBoxesOnly && (!Number.isInteger(outlineMinPoints) || !Number.isInteger(outlineMaxPoints) ||
+        outlineMinPoints < 3 || outlineMaxPoints > 10_000 || outlineMinPoints > outlineMaxPoints)) {
       setError("Outline points must be whole numbers from 3 to 10000, with minimum no greater than maximum. The maximum is required.");
       return;
     }
@@ -567,8 +569,8 @@ export default function ScanbodyWorkspace() {
         body: JSON.stringify({
           imageSize: imageDimension,
           jpegQuality,
-          outlineMinPoints,
-          outlineMaxPoints,
+          boundingBoxesOnly,
+          ...(boundingBoxesOnly ? {} : { outlineMinPoints, outlineMaxPoints }),
           // The selected run's own save switch controls both its result file and
           // raw-response JSON. Baseline/tooth saving has a separate switch.
           saveFiles: shouldSaveFiles,
@@ -599,13 +601,19 @@ export default function ScanbodyWorkspace() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Analysis failed.");
       const apiResult = payload as AnalysisResult;
+      const isBoxResult = apiResult.meta.detectionMode === "box";
+      // Box trials are standalone results even when using the Sol button. They
+      // cannot replace the segmentation baseline or invalidate comparisons.
+      const savedKind = isBoxResult ? "standalone" : runKind;
       // MAPPING STOPWATCH: starts after the API response has been received and
       // parsed; stops when local mapping, voting, and mesh cleanup return.
       // Highlight rendering, exports, and saving files happen after this timer.
       // The server's existing LLM elapsedMs remains unchanged.
-      const mappingStartedAt = performance.now();
-      const { triangleIds, groupCount } = mapAnalysisToTriangles(apiResult);
-      const mappingElapsedMs = performance.now() - mappingStartedAt;
+      const mappingStartedAt = isBoxResult ? null : performance.now();
+      const { triangleIds, groupCount } = isBoxResult
+        ? { triangleIds: new Set<number>(), groupCount: 0 }
+        : mapAnalysisToTriangles(apiResult);
+      const mappingElapsedMs = mappingStartedAt === null ? null : performance.now() - mappingStartedAt;
       const result: AnalysisResult = {
         ...apiResult,
         meta: { ...apiResult.meta, pcaElapsedMs, captureElapsedMs, preparationElapsedMs, mappingElapsedMs },
@@ -635,7 +643,7 @@ export default function ScanbodyWorkspace() {
           ? baselineSelection.reasoningEffort
           : comparisonEffort;
       const metrics =
-        runKind === "comparison" && baselineRun
+        !isBoxResult && runKind === "comparison" && baselineRun
           ? compareTriangleSelections(
               baselineRun.selectedTriangleIds,
               triangleIds,
@@ -645,14 +653,14 @@ export default function ScanbodyWorkspace() {
           : null;
       const savedRun: SavedBenchmarkRun = {
         id:
-          runKind === "baseline"
+          savedKind === "baseline"
             ? `baseline:v${BENCHMARK_STORAGE_VERSION}:${modelInfo.key}`
-            : `${runKind}:${modelInfo.key}:${Date.now()}:${runModel}:${runEffort}:${result.meta.processingSpeed ?? "standard"}`,
+            : `${savedKind}:${modelInfo.key}:${Date.now()}:${runModel}:${runEffort}:${result.meta.processingSpeed ?? "standard"}`,
         storageVersion: BENCHMARK_STORAGE_VERSION,
         meshKey: modelInfo.key,
         meshName: modelInfo.name,
         meshFolderName: modelInfo.folderName,
-        kind: runKind,
+        kind: savedKind,
         model: runModel,
         reasoningEffort: runEffort,
         ...(runKind !== "baseline" && result.meta.processingSpeed
@@ -664,7 +672,7 @@ export default function ScanbodyWorkspace() {
         objectCount: groupCount,
         // Keep the baseline JSON unchanged. Other model runs get this clearer
         // field so the final number of separate 3D scanbodies is easy to find.
-        ...(runKind !== "baseline"
+        ...(runKind !== "baseline" && !isBoxResult
           ? { detectedScanbodyCount: groupCount }
           : {}),
         metrics,
@@ -672,7 +680,7 @@ export default function ScanbodyWorkspace() {
 
       // Results always remain available in memory for the current session,
       // regardless of whether writing JSON files is enabled.
-      if (runKind === "baseline") {
+      if (savedKind === "baseline") {
         // Replacing the baseline invalidates comparisons made against the old
         // one, so those old candidate runs are cleared deliberately.
         setBaselineRun(savedRun);
@@ -683,7 +691,9 @@ export default function ScanbodyWorkspace() {
 
       if (!shouldSaveFiles) {
         setAnalysisNotice(
-          runKind === "baseline"
+          isBoxResult
+            ? "Bounding boxes are ready. No 3D segmentation was performed. File saving is off."
+            : runKind === "baseline"
             ? "Sol Medium baseline is ready for this session. File saving is off."
             : runKind === "standalone"
               ? "Segmentation is ready. No baseline comparison or files saved."
@@ -691,7 +701,10 @@ export default function ScanbodyWorkspace() {
         );
       } else {
         try {
-          if (runKind === "baseline") {
+          if (isBoxResult) {
+            const savedPath = await saveBenchmarkFile(savedRun);
+            setAnalysisNotice(`Bounding boxes saved to ${savedPath}. No 3D segmentation was performed.`);
+          } else if (runKind === "baseline") {
             const savedPath = await saveBenchmarkFile(savedRun);
             setAnalysisNotice(
               `Sol Medium baseline saved to ${savedPath}`,
@@ -730,6 +743,7 @@ export default function ScanbodyWorkspace() {
     jpegQuality,
     outlineMinPointsInput,
     outlineMaxPointsInput,
+    boundingBoxesOnly,
     comparisonEffort,
     comparisonModel,
     comparisonParallelViews,
@@ -749,6 +763,10 @@ export default function ScanbodyWorkspace() {
   // an STL, segmenting, and viewing saved comparisons never trigger this call.
   const estimateToothNumbers = useCallback(async () => {
     if (!analysis || !modelInfo || busyLabel || capturedViews.length === 0) return;
+    if (analysis.meta.detectionMode === "box") {
+      setError("Run outline segmentation before estimating tooth numbers.");
+      return;
+    }
     const viewName = chooseToothNumberView(capturedViews.map((view) => view.name), analysis.views, toothViewChoice);
     const referenceView = requestViews.find((view) => view.name === viewName);
     const detections = analysis.views.find((view) => view.view === viewName)?.detections ?? [];
@@ -848,6 +866,7 @@ export default function ScanbodyWorkspace() {
     [analysis],
   );
   const sharedImageRequest = analysis?.meta.viewTimings === null;
+  const isBoxAnalysis = analysis?.meta.detectionMode === "box";
   const analyzedViewNames = new Set(analysis?.meta.selectedViews ?? []);
   const previewView = requestViews.find(
     (view) => view.name === previewViewName,
@@ -860,7 +879,7 @@ export default function ScanbodyWorkspace() {
   const comparisonModelOption = getAiModelOption(comparisonModel);
   const toothReferenceName = chooseToothNumberView(capturedViews.map((view) => view.name), analysis?.views ?? [], toothViewChoice);
   const toothReferenceLabel = toothReferenceName === "bottom" ? "Bottom" : "Top";
-  const hasToothTargets = Boolean(toothReferenceName && analysis?.views.find((view) => view.view === toothReferenceName)?.detections.length);
+  const hasToothTargets = !isBoxAnalysis && Boolean(toothReferenceName && analysis?.views.find((view) => view.view === toothReferenceName)?.detections.length);
   const toothFdiNumbers = [...new Set(toothNumbers?.assignments.flatMap((assignment) =>
     assignment.toothFdi === null ? [] : [assignment.toothFdi]) ?? [])].sort((a, b) => a - b);
   const uncertainToothReasons = [...new Set(toothNumbers?.assignments
@@ -1073,7 +1092,7 @@ export default function ScanbodyWorkspace() {
               ) : (
                 <ScanSearch size={17} />
               )}
-              {baselineRun ? "Replace" : "Run"} Sol Medium baseline
+              {boundingBoxesOnly ? "Find boxes with Sol Medium" : `${baselineRun ? "Replace" : "Run"} Sol Medium baseline`}
             </button>
 
             {baselineRun ? (
@@ -1251,7 +1270,7 @@ export default function ScanbodyWorkspace() {
                 <small>Off: run normally, without a baseline</small>
               </span>
               <input type="checkbox" checked={compareModelWithBaseline}
-                disabled={Boolean(busyLabel)}
+                disabled={Boolean(busyLabel) || boundingBoxesOnly}
                 onChange={(event) => setCompareModelWithBaseline(event.currentTarget.checked)} />
               <span className={styles.toggleTrack} aria-hidden="true"><span /></span>
             </label>
@@ -1265,7 +1284,7 @@ export default function ScanbodyWorkspace() {
                 onChange={(event) => setSaveModelResultFiles(event.currentTarget.checked)} />
               <span className={styles.toggleTrack} aria-hidden="true"><span /></span>
             </label>
-            {compareModelWithBaseline && !baselineRun ? (
+            {compareModelWithBaseline && !baselineRun && !boundingBoxesOnly ? (
               <p className={styles.benchmarkHint}>Run a Sol Medium baseline first, or switch comparison off.</p>
             ) : null}
             <button
@@ -1273,7 +1292,7 @@ export default function ScanbodyWorkspace() {
               type="button"
               onClick={() => void runAnalysis(compareModelWithBaseline ? "comparison" : "standalone")}
               disabled={
-                (compareModelWithBaseline && !baselineRun) ||
+                (compareModelWithBaseline && !baselineRun && !boundingBoxesOnly) ||
                 selectedViewCount === 0 ||
                 Boolean(busyLabel)
               }
@@ -1283,7 +1302,7 @@ export default function ScanbodyWorkspace() {
               ) : (
                 <ScanSearch size={17} />
               )}
-              {compareModelWithBaseline ? "Run and compare" : "Run segmentation"}
+              {boundingBoxesOnly ? "Find bounding boxes" : compareModelWithBaseline ? "Run and compare" : "Run segmentation"}
             </button>
 
             {latestModelRun ? (
@@ -1308,7 +1327,9 @@ export default function ScanbodyWorkspace() {
                 <div className={styles.runCostLine}>
                   <span>{(latestModelRun.analysis.meta.elapsedMs / 1000).toFixed(1)} seconds</span>
                   <span>{formatRunCost(latestModelRun.analysis.meta)}</span>
-                  <span>{latestModelRun.objectCount} objects</span>
+                  <span>{latestModelRun.analysis.meta.detectionMode === "box"
+                    ? `${latestModelRun.analysis.views.reduce((count, view) => count + view.detections.length, 0)} boxes (2D)`
+                    : `${latestModelRun.objectCount} objects`}</span>
                 </div>
               </div>
             ) : null}
@@ -1369,17 +1390,26 @@ export default function ScanbodyWorkspace() {
             <div className={styles.sectionHeading}>
               <h2>Outline points</h2>
             </div>
+            <label className={styles.saveToggle}>
+              <span>
+                <strong>Bounding boxes only</strong>
+                <small>On: return boxes only. Skip 3D mapping and comparison.</small>
+              </span>
+              <input type="checkbox" checked={boundingBoxesOnly} disabled={Boolean(busyLabel)}
+                onChange={(event) => setBoundingBoxesOnly(event.currentTarget.checked)} />
+              <span className={styles.toggleTrack} aria-hidden="true"><span /></span>
+            </label>
             <div className={styles.selectorGrid}>
               <label>
                 <span>Minimum points</span>
                 <input type="number" min={3} max={10_000} step={1} placeholder="3"
-                  value={outlineMinPointsInput} disabled={Boolean(busyLabel)}
+                  value={outlineMinPointsInput} disabled={Boolean(busyLabel) || boundingBoxesOnly}
                   onChange={(event) => setOutlineMinPointsInput(event.currentTarget.value)} />
               </label>
               <label>
                 <span>Maximum points</span>
                 <input type="number" min={3} max={10_000} step={1} required
-                  value={outlineMaxPointsInput} disabled={Boolean(busyLabel)}
+                  value={outlineMaxPointsInput} disabled={Boolean(busyLabel) || boundingBoxesOnly}
                   onChange={(event) => setOutlineMaxPointsInput(event.currentTarget.value)} />
               </label>
             </div>
@@ -1650,7 +1680,7 @@ export default function ScanbodyWorkspace() {
                   <strong>{analysis?.meta.modelLabel.replace("GPT-6.1 ", "") ?? "—"}</strong>
                 </div>
                 <div>
-                  <span>2D detections</span>
+                  <span>{isBoxAnalysis ? "2D boxes" : "2D detections"}</span>
                   <strong>{detectionCount}</strong>
                 </div>
                 <div>
@@ -1677,7 +1707,7 @@ export default function ScanbodyWorkspace() {
                 </div>
                 <div title="Recorded time converting the returned 2D outlines into 3D triangles, including multiview voting and local cleanup.">
                   <span>3D mapping</span>
-                  <strong>{formatStageTime(analysis?.meta.mappingElapsedMs)}</strong>
+                  <strong>{isBoxAnalysis ? "Skipped" : formatStageTime(analysis?.meta.mappingElapsedMs)}</strong>
                 </div>
               </div>
             </div>
@@ -1811,7 +1841,7 @@ function ViewThumbnail({
         </div>
         <footer>
           <span>{view.label}</span>
-          <span>{detections.length ? `${detections.length} ROI` : "Clear"}</span>
+          <span>{detections.length ? `${detections.length} ${detections[0].box ? "boxes" : "ROI"}` : "Clear"}</span>
           <small className={styles.viewRequestTime} title={wasSent === false
             ? "This view was not sent in the displayed run."
             : sharedRequest

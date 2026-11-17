@@ -3,10 +3,13 @@ import type { AiProvider, ReasoningEffort, ProcessingSpeed } from "./ai-models";
 export const CAPTURE_SIZE = 1024;
 
 export type ImagePoint = [number, number];
+export type BoundingBox = [number, number, number, number];
 
 export type Detection = {
   label: "scanbody";
   outline: ImagePoint[];
+  // In box mode, outline contains display-only rectangle corners, not a mask.
+  box?: BoundingBox;
   confidence: number;
 };
 
@@ -20,6 +23,8 @@ export type AnalysisResult = {
   meta: {
     model: string;
     modelLabel: string;
+    // Absent on legacy segmentation files, which continue to mean "outline".
+    detectionMode?: "outline" | "box";
     provider: AiProvider;
     // Present only on new Claude runs so direct and LangChain results are distinct.
     integration?: "langchain" | "anthropic-sdk";

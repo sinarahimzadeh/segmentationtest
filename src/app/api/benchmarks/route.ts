@@ -14,6 +14,7 @@ const analysisSchema = z.object({
         z.object({
           label: z.literal("scanbody"),
           outline: z.array(pointSchema),
+          box: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
           confidence: z.number(),
         }),
       ),
@@ -22,6 +23,7 @@ const analysisSchema = z.object({
   meta: z.object({
     model: z.string(),
     modelLabel: z.string(),
+    detectionMode: z.enum(["outline", "box"]).optional(),
     provider: z.enum(["openai", "xai", "google", "anthropic", "mistral", "openrouter"]).default("openai"),
     integration: z.enum(["langchain", "anthropic-sdk"]).optional(),
     reasoningEffort: z.enum(REASONING_EFFORTS),
@@ -81,6 +83,10 @@ const savedRunSchema = z.object({
   detectedScanbodyCount: z.number().int().nonnegative().optional(),
   metrics: metricsSchema.nullable(),
 }).superRefine((run, context) => {
+  if (run.analysis.meta.detectionMode === "box" &&
+      (run.kind !== "standalone" || run.metrics !== null || run.selectedTriangleIds.length > 0 || run.objectCount !== 0)) {
+    context.addIssue({ code: "custom", message: "Box-only runs must be standalone, without 3D selections or comparison metrics." });
+  }
   if (run.kind === "standalone" && run.metrics !== null) {
     context.addIssue({ code: "custom", path: ["metrics"], message: "Standalone runs do not have baseline comparison metrics." });
   }
@@ -122,7 +128,8 @@ export async function POST(request: Request) {
     const meshDirectory = getMeshDirectory(run.meshKey);
     const comparisonsDirectory = join(meshDirectory, "comparisons");
     // Uncompared results have their own folder and survive baseline replacement.
-    const runDirectory = join(meshDirectory, run.kind === "standalone" ? "runs" : "comparisons");
+    const runDirectory = join(meshDirectory, run.analysis.meta.detectionMode === "box"
+      ? "boxes" : run.kind === "standalone" ? "runs" : "comparisons");
     await mkdir(runDirectory, { recursive: true });
 
     const outputPath =
@@ -167,7 +174,7 @@ export async function GET(request: Request) {
       // No saved baseline for this STL yet.
     }
 
-    for (const runDirectory of [comparisonsDirectory, join(meshDirectory, "runs")]) {
+    for (const runDirectory of [comparisonsDirectory, join(meshDirectory, "runs"), join(meshDirectory, "boxes")]) {
       try {
         // These are runtime-generated user results, not bundled source assets.
         const files = (await readdir(/* turbopackIgnore: true */ runDirectory))
